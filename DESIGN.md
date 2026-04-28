@@ -22,6 +22,7 @@ The initial target is macOS, utilizing direct OS API calls via `cgo` (Accessibil
 
 **Non-Goals:**
 * Creating a traditional, heavy desktop application UI. The visual footprint is strictly limited to the menu bar/system tray and its associated dropdowns/popups.
+* Create an in-app configuration system.  Configuration is fine to be hard coded into the app, but easy to modify via code in one place.
 * Automatic window tiling (like Yabai or i3). This remains purely a manual, hotkey-driven window manager.
 * Linux/X11/Wayland support (initially out of scope, though the architecture should not strictly block it).
 
@@ -41,9 +42,10 @@ The application must dynamically evaluate the foreground (active) application. I
 ### 3.2. Menu Bar / System Tray UI
 The application must run with an icon in the macOS Menu Bar (and eventually the Windows System Tray).
 * **Toggle State:** A menu item to manually Suspend/Activate the application (overriding the context-aware logic if suspended).
-* **Interactive Reference:** A menu item that opens a popup or sub-menu listing all available shortcuts.
+* **Interactive Reference:** A menu item that opens a sub-menu listing all available shortcuts.
     * These listed shortcuts must be **clickable**. Clicking a shortcut in the UI should execute the corresponding window management action on the currently active window, exactly as if the hotkey was pressed.
 * **Quit:** A clean exit option.
+* It needs a simple icon for both platforms
 
 ### 3.3. Window Tiling & Snapping (Hotkeys)
 **Modifiers:** `Ctrl + Alt`

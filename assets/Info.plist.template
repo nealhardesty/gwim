@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>GWiM</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>GWiM</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>dev.nealhardesty.gwim</string>
+
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleExecutable</key>
+    <string>gwim</string>
+
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+
+    <!-- Run as a background agent: no Dock icon, no app switcher. -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Required so the system prompt explains why GWiM needs accessibility -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>GWiM uses the Accessibility API to move and resize windows.</string>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © Neal Hardesty. Released under the MIT License.</string>
+</dict>
+</plist>
