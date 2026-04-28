@@ -1,2 +1,2 @@
-# macman
+# gwim
 Simple Keyboard Shortcuts and Automation
