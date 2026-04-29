@@ -21,10 +21,8 @@ type Shortcut struct {
 // ToggleHotkey is the persistent hotkey bound to ToggleUserSuspended.
 //
 // "Persistent" means the OS keeps it registered even while regular
-// shortcuts are unregistered (during a screen-sharing session etc.), so
-// the user can always reclaim or release control of GWiM. When this
-// hotkey fires, the engine flips between UserModeForceActive and
-// UserModeForceSuspended, overriding the automatic blocklist signal.
+// shortcuts are unregistered (manual suspend), so the user can always
+// reclaim or release control of GWiM from the keyboard.
 type ToggleHotkey struct {
 	Modifiers []string
 	Key       string
@@ -183,24 +181,6 @@ func DefaultShortcuts() []Shortcut {
 		{ActionID: "throw.north", Modifiers: throwingMods, Key: "k"},
 		{ActionID: "throw.south", Modifiers: throwingMods, Key: "down"},
 		{ActionID: "throw.south", Modifiers: throwingMods, Key: "j"},
-	}
-}
-
-// DefaultBlocklist returns the bundle identifiers of remote-control and
-// virtualization apps that should suppress GWiM hotkeys while focused.
-//
-// Per PRD §3.1. Modify here (and only here) to extend the list.
-func DefaultBlocklist() []string {
-	return []string{
-		"com.microsoft.rdc.macos",  // Microsoft Remote Desktop
-		"com.microsoft.windowsapp", // Windows App (the new MS RDC client)
-		"com.apple.ScreenSharing",  // Apple Screen Sharing
-		"com.realvnc.vncviewer",    // RealVNC Viewer
-		"com.tigervnc.vncviewer",   // TigerVNC Viewer
-		// Parallels Desktop / VMware Fusion are noted optional in the PRD;
-		// uncomment to enable.
-		// "com.parallels.desktop.console",
-		// "com.vmware.fusion",
 	}
 }
 

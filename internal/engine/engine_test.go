@@ -24,8 +24,7 @@ func (w *fakeWindow) ToggleFullScreen() error    { return nil }
 
 // fakeWM is the in-memory wm.WindowManager used in engine tests.
 //
-// activeApp is mutable from tests to simulate switching to a blocklisted
-// remote-control app and triggering auto-suspension.
+// activeApp is mutable from tests to simulate switching foreground apps.
 type fakeWM struct {
 	mu        sync.Mutex
 	win       *fakeWindow
@@ -121,7 +120,6 @@ func makeEngine(t *testing.T, fwm *fakeWM, fhk *fakeHK) *Engine {
 		HotkeyManager: fhk,
 		Actions:       actions,
 		Shortcuts:     shortcuts,
-		Blocklist:     []string{"com.test.blocked"},
 		PollInterval:  20 * time.Millisecond,
 	})
 	if err != nil {
@@ -175,52 +173,6 @@ func TestDispatch_UserSuspended(t *testing.T) {
 	}
 	if !fhk.Suspended() {
 		t.Fatalf("HotkeyManager should reflect suspended state")
-	}
-}
-
-// TestDispatch_BlocklistAutoSuspends verifies the polling loop flips
-// auto-suspension when a blocklisted app comes to the foreground.
-func TestDispatch_BlocklistAutoSuspends(t *testing.T) {
-	win := &fakeWindow{}
-	fwm := &fakeWM{win: win, screen: wm.Rect{W: 1000, H: 800}, activeApp: "com.test.allowed"}
-	fhk := newFakeHK()
-	e := makeEngine(t, fwm, fhk)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := e.Run(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer e.Stop()
-
-	fwm.setActiveApp("com.test.blocked")
-
-	// Wait up to 500ms for the next poll tick to register the change.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if e.Snapshot().AutoSuspended {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !e.Snapshot().AutoSuspended {
-		t.Fatalf("expected auto-suspended after blocklisted app activated")
-	}
-	fhk.fire("h")
-	if got := atomic.LoadInt32(&win.calls); got != 0 {
-		t.Fatalf("auto-suspended dispatch should be blocked; got %d", got)
-	}
-
-	fwm.setActiveApp("com.test.allowed")
-	deadline = time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if !e.Snapshot().AutoSuspended {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if e.Snapshot().AutoSuspended {
-		t.Fatalf("expected auto-suspension cleared after returning to allowed app")
 	}
 }
 
@@ -327,49 +279,9 @@ func TestToggle_FlipsActiveAndSuspended(t *testing.T) {
 	}
 }
 
-// TestToggle_OverridesAutoSuspension is the headline behaviour for the
-// new feature: the toggle must be able to FORCE GWiM on while a
-// blocklisted app (screen sharing etc.) is foreground, and a regular
-// hotkey must subsequently fire.
-func TestToggle_OverridesAutoSuspension(t *testing.T) {
-	win := &fakeWindow{frame: wm.Rect{W: 100, H: 100}}
-	fwm := &fakeWM{win: win, screen: wm.Rect{W: 1000, H: 800}, activeApp: "com.test.blocked"}
-	fhk := newFakeHK()
-	e := makeEngine(t, fwm, fhk)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := e.Run(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer e.Stop()
-
-	// Wait for the poller to flip auto-suspended.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) && !e.Snapshot().AutoSuspended {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !e.Snapshot().AutoSuspended {
-		t.Fatal("setup: expected auto-suspended before toggle")
-	}
-
-	// The toggle MUST work even when auto-suspended.
-	e.ToggleUserSuspended()
-	s := e.Snapshot()
-	if s.UserMode != UserModeForceActive || !s.Active() {
-		t.Fatalf("toggle should override auto-suspend; got mode=%s active=%t auto=%t",
-			s.UserMode, s.Active(), s.AutoSuspended)
-	}
-
-	fhk.fire("h")
-	if got := atomic.LoadInt32(&win.calls); got != 1 {
-		t.Fatalf("regular hotkey should now dispatch; got %d calls", got)
-	}
-}
-
 // TestPersistentHotkey_FiresWhileSuspended confirms a hotkey registered
 // via RegisterPersistent dispatches even while regular hotkeys do not.
-// This is what makes the Ctrl+Alt+X toggle reachable mid-screen-share.
+// This is what makes the Ctrl+Alt+X toggle reachable while suspended.
 func TestPersistentHotkey_FiresWhileSuspended(t *testing.T) {
 	fwm := &fakeWM{win: &fakeWindow{}, screen: wm.Rect{W: 1000, H: 800}, activeApp: "com.test.allowed"}
 	fhk := newFakeHK()
@@ -386,7 +298,6 @@ func TestPersistentHotkey_FiresWhileSuspended(t *testing.T) {
 		Actions:       actions,
 		Shortcuts:     shortcuts,
 		ToggleHotkey:  &ToggleHotkey{Modifiers: []string{"ctrl", "alt"}, Key: "x"},
-		Blocklist:     []string{"com.test.blocked"},
 		PollInterval:  20 * time.Millisecond,
 	})
 	if err != nil {

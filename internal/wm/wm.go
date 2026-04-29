@@ -93,8 +93,9 @@ type HotkeyHandler func()
 // HotkeyManager registers and dispatches global hotkeys.
 //
 // SetSuspended toggles whether registered hotkeys are active. While
-// suspended, key combinations are passed through to the foreground
-// application unhandled, which is essential for remote-desktop scenarios.
+// suspended (manual suspend from the menu or toggle hotkey), key
+// combinations are passed through to the foreground application unhandled,
+// e.g. so shortcuts can reach a remote-desktop client unchanged.
 type HotkeyManager interface {
 	// Register adds a new global hotkey. Modifiers use canonical names:
 	// "ctrl", "alt" (or "option"), "shift", "cmd" (or "win").
@@ -109,10 +110,9 @@ type HotkeyManager interface {
 	// RegisterPersistent registers a hotkey that survives suspension.
 	//
 	// Persistent hotkeys are NEVER unregistered by SetSuspended, so they
-	// continue to fire even while a remote-desktop / blocklisted app is
-	// foreground. Reserved for control-channel commands like the
-	// "toggle GWiM on/off" hotkey, where the user must always be able
-	// to drive GWiM regardless of suspension state.
+	// continue to fire while regular hotkeys are suspended. Reserved for
+	// control-channel commands like the "toggle GWiM on/off" hotkey, where
+	// the user must always be able to drive GWiM regardless of suspension state.
 	RegisterPersistent(modifiers []string, key string, handler HotkeyHandler) error
 
 	// SetSuspended enables (false) or disables (true) hotkey dispatch

@@ -70,9 +70,8 @@ import (
 //
 // Suspension semantics: when SetSuspended(true) is called, every hotkey is
 // physically unregistered from the OS so the keystroke flows to the
-// foreground application. This is required for remote-desktop workflows
-// where Ctrl+Alt+arrow must reach the remote machine, not be swallowed by
-// GWiM. Re-registration on SetSuspended(false) is best-effort; failures
+// foreground application (e.g. after the user suspends GWiM while using a
+// remote-desktop client). Re-registration on SetSuspended(false) is best-effort; failures
 // are logged but do not abort other hotkeys.
 type macHotkeyManager struct {
 	mu        sync.Mutex

@@ -1,8 +1,8 @@
 // Package icon provides the embedded menu-bar icons used by the systray UI.
 //
 // We ship two PNG variants: an "active" icon shown while GWiM is dispatching
-// hotkeys, and a "suspended" icon shown while suspended (manually or due to
-// a blocklisted foreground app). Both are generated procedurally at compile
+// hotkeys, and a "suspended" icon shown while suspended from the menu or
+// toggle shortcut. Both are generated procedurally at compile
 // time by scripts/gen-icon to avoid checking binary assets into git.
 package icon
 

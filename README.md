@@ -2,8 +2,8 @@
 
 A lightweight, keyboard-driven window manager for macOS, written in Go. GWiM
 replaces a legacy Hammerspoon (Lua) setup with a single compiled binary that
-ships as a menu-bar agent, registers global hotkeys, and yields control to
-remote-desktop clients automatically.
+ships as a menu-bar agent, registers global hotkeys, and lets you suspend
+them when needed so shortcuts reach another app unchanged (e.g. remote desktop).
 
 > **Status:** macOS implementation is complete. Windows is scaffolded
 > (`internal/platform/windows/`) and is the next milestone — see
@@ -17,15 +17,12 @@ remote-desktop clients automatically.
   bottom strips; relative move and resize; throw windows between monitors.
 - **Native fullscreen toggle** via `Ctrl+Alt+F` (true Spaces fullscreen, not
   just frame maximization).
-- **Context-aware suspension**: when a remote-desktop or VNC app gains focus
-  (Microsoft Remote Desktop, Apple Screen Sharing, RealVNC, TigerVNC,
-  Windows App), GWiM physically unregisters its hotkeys so the keystrokes
-  reach the remote machine.
-- **Always-available toggle** (`Ctrl+Alt+X`): a persistent hotkey that
-  flips GWiM on/off and can **override auto-suspension**, so you can
-  enable GWiM mid-screen-sharing if you need to rearrange local windows
-  without dismissing the remote session. The same toggle is on the menu
-  bar.
+- **Manual suspension**: suspend hotkeys from the menu bar or **`Ctrl+Alt+X`**
+  so keystrokes go to the foreground app (e.g. remote desktop). While suspended,
+  GWiM physically unregisters its regular hotkeys; the toggle shortcut stays
+  registered so you can resume anytime.
+- **Persistent toggle** (`Ctrl+Alt+X`): flips GWiM on/off; works even while
+  regular shortcuts are suspended so you can resume without using the menu bar.
 - **Alt-Tab window switcher** (`⌥⇥` / `⌥⇧⇥`): per-window MRU switching
   across all running apps. Holding Option opens a centred overlay with
   **live window thumbnails** plus an app-icon badge per slot; repeated
@@ -76,7 +73,7 @@ All snap shortcuts use **`⌃⌥`** (Ctrl+Alt). Move uses **`⌃⌥⇧`**, resiz
 | Bottom strip (left/right)| `N` / `,`           |
 | Maximize (frame)         | `↩` (Return)        |
 | Native fullscreen toggle | `F`                 |
-| **Toggle GWiM on/off**   | **`X`** *(persistent — works even during screen sharing)* |
+| **Toggle GWiM on/off**   | **`X`** *(persistent — works while regular hotkeys are suspended)* |
 
 The window switcher uses its own chord (no `⌃` modifier):
 
@@ -176,16 +173,15 @@ assets/Info.plist.template# .app bundle plist (LSUIElement=YES)
 - **Interface-first**: `internal/engine` and `internal/ui` know nothing
   about macOS. The Windows port plugs into the same interfaces in
   `internal/platform/windows/`.
-- **Suspension is a state machine** with two inputs:
-  - `UserMode` (Auto / ForceActive / ForceSuspended) — explicit user
-    override that always wins when set to a Force value.
-  - `autoSuspended` — driven by a 500ms blocklist poller.
+- **Suspension is a state machine** driven by `UserMode` (Auto / ForceActive /
+  ForceSuspended) from the menu or **`Ctrl+Alt+X`**. A background poller
+  refreshes Accessibility and Screen Recording grant state for the tray; it
+  does not change whether hotkeys are active.
 
-  When the engine is effectively suspended, regular hotkeys are
-  physically unregistered so the OS dispatches them to the foreground
-  app. The Ctrl+Alt+X toggle is registered as a **persistent** hotkey
-  (`HotkeyManager.RegisterPersistent`) so it stays bound at all times
-  and gives the user a way back in.
+  When the engine is suspended, regular hotkeys are physically unregistered
+  so the OS dispatches them to the foreground app. The Ctrl+Alt+X toggle is
+  registered as a **persistent** hotkey (`HotkeyManager.RegisterPersistent`)
+  so it stays bound at all times and provides a way to resume.
 - **Accessibility health is first-class state**: the engine polls a
   non-prompting accessibility check and surfaces the result to the tray.
   Clicking the tray row re-checks immediately and opens System Settings.

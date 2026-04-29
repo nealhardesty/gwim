@@ -11,8 +11,7 @@ package macos
 // gwim_frontmost_bundle_id returns a strdup'd C string for the frontmost
 // application's bundle identifier, or NULL if unknown. Caller frees with
 // free(). Some apps (e.g. helper tools) may have nil bundleIdentifier — in
-// that case we fall back to localizedName so the suspension blocklist can
-// still match.
+// that case we fall back to localizedName for tray / diagnostics.
 static char *gwim_frontmost_bundle_id(void) {
     NSRunningApplication *app = [[NSWorkspace sharedWorkspace] frontmostApplication];
     if (app == nil) return NULL;

@@ -4,4 +4,4 @@ package main
 //
 // Bump via `make version-increment` or directly when releasing.
 // The Makefile keeps git tags and the .app bundle in sync with this value.
-const Version = "1.0.2"
+const Version = "1.1.0"

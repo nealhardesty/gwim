@@ -6,7 +6,7 @@
 //     (SetWindowPos, GetWindowRect, SetForegroundWindow).
 //   - Active-app detection via GetForegroundWindow,
 //     GetWindowThreadProcessId, QueryFullProcessImageNameW (the executable
-//     base name fills the role of macOS bundle ID in the engine blocklist).
+//     base name fills the role of macOS bundle ID for foreground identification).
 //   - Global hotkeys via RegisterHotKey / UnregisterHotKey from user32.dll
 //     with a hidden message-only window pumping WM_HOTKEY.
 //

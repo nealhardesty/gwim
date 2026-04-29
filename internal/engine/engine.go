@@ -11,18 +11,15 @@ import (
 	"github.com/nealhardesty/gwim/internal/wm"
 )
 
-// UserMode is the user's explicit suspension preference. It is one of
-// three states that ALWAYS wins over the automatic blocklist signal
-// when set to a "Force" value.
+// UserMode is the user's explicit suspension preference.
 //
-//   - UserModeAuto         — defer to automatic suspension; default at startup.
-//   - UserModeForceActive  — override auto: GWiM is on regardless of foreground app.
-//   - UserModeForceSuspended — override auto: GWiM is off regardless of foreground app.
+//   - UserModeAuto — default at startup: hotkeys follow effective activity
+//     (always active unless changed by toggle; no automatic suspension).
+//   - UserModeForceActive — GWiM stays on (after user toggles resume).
+//   - UserModeForceSuspended — GWiM hotkeys are off until toggled back on.
 //
-// The override design satisfies the requirement that the user must be
-// able to enable GWiM during a screen-sharing session (when auto would
-// otherwise suspend). The tray toggle and Ctrl+Alt+X both flip this
-// mode based on current effective state.
+// The tray toggle and Ctrl+Alt+X flip this mode based on current effective
+// state so the user can suspend or resume without quitting.
 type UserMode int32
 
 const (
@@ -43,8 +40,8 @@ func (m UserMode) String() string {
 	}
 }
 
-// Engine is the heart of GWiM: it holds the action table, the live
-// blocklist, the user-mode override, and the automatic blocklist signal.
+// Engine is the heart of GWiM: it holds the action table, shortcut
+// bindings, and user-mode override for manual suspension.
 //
 // It deliberately exposes a tiny surface (Run / Execute /
 // ToggleUserSuspended / SetUserMode / Stop / Snapshot) so the UI and main
@@ -55,13 +52,11 @@ type Engine struct {
 	actions   []Action
 	shortcuts []Shortcut
 	toggle    *ToggleHotkey
-	blocklist []string
 
 	mu      sync.RWMutex
 	actByID map[string]*Action
 
-	userMode      atomic.Int32 // stores UserMode
-	autoSuspended atomic.Bool  // toggled by blocklist poller
+	userMode atomic.Int32 // stores UserMode
 
 	axCheck   func() bool
 	axGranted atomic.Bool // last result of axCheck
@@ -84,8 +79,8 @@ type Engine struct {
 // SuspensionState is a snapshot of the engine's effective suspension state
 // plus enough context for the tray UI to render its labels.
 //
-// UserSuspended and Auto fields are kept for ergonomic access; UserMode
-// is the canonical truth and Active() does the right thing in all cases.
+// UserSuspended is a compat alias for UserMode == UserModeForceSuspended;
+// UserMode is the canonical truth and Active() reflects effective dispatch.
 //
 // AccessibilityGranted is platform-supplied (via Config.AccessibilityCheck)
 // and exposed here so the tray can warn the user when permission has been
@@ -99,9 +94,7 @@ type Engine struct {
 type SuspensionState struct {
 	UserMode               UserMode
 	UserSuspended          bool // == UserMode == UserModeForceSuspended (compat alias)
-	AutoSuspended          bool
 	ActiveAppID            string
-	ActiveAppBlocked       bool
 	ManagedHotkeyCount     int
 	AccessibilityChecked   bool   // false when no Config.AccessibilityCheck supplied
 	AccessibilityGranted   bool   // last result of AccessibilityCheck()
@@ -112,7 +105,8 @@ type SuspensionState struct {
 
 // Active reports whether GWiM is currently dispatching hotkeys.
 //
-// Resolution order: explicit user override beats automatic suspension.
+// Explicit force modes win; UserModeAuto means active unless the user has
+// chosen suspension via toggle (which moves the mode out of Auto).
 func (s SuspensionState) Active() bool {
 	switch s.UserMode {
 	case UserModeForceActive:
@@ -120,20 +114,20 @@ func (s SuspensionState) Active() bool {
 	case UserModeForceSuspended:
 		return false
 	default:
-		return !s.AutoSuspended
+		return true
 	}
 }
 
 // Config bundles the dependencies and tunables for a new Engine.
 //
-// PollInterval defaults to 500ms when zero — fast enough that the user
-// can switch to a remote desktop and immediately type without GWiM
-// stealing the first key, slow enough not to burn CPU.
+// PollInterval defaults to 500ms when zero — used for periodic
+// accessibility and screen-recording permission probes so the tray stays
+// accurate if the user changes System Settings.
 //
 // ToggleHotkey, when non-nil, registers a persistent hotkey that flips
 // the user-mode override. Persistent means it remains live even while
-// regular shortcuts are suspended (e.g. during a screen-sharing session)
-// so the user can always reclaim control.
+// regular shortcuts are suspended (manual suspend) so the user can always
+// resume or suspend from the keyboard.
 //
 // AccessibilityCheck, when non-nil, is invoked on every poller tick and
 // after every failed action to refresh SuspensionState.AccessibilityGranted.
@@ -148,7 +142,6 @@ type Config struct {
 	Actions              []Action
 	Shortcuts            []Shortcut
 	ToggleHotkey         *ToggleHotkey
-	Blocklist            []string
 	PollInterval         time.Duration
 	Logger               *log.Logger
 	AccessibilityCheck   func() bool
@@ -180,7 +173,6 @@ func New(cfg Config) (*Engine, error) {
 		actions:      cfg.Actions,
 		shortcuts:    cfg.Shortcuts,
 		toggle:       cfg.ToggleHotkey,
-		blocklist:    cfg.Blocklist,
 		actByID:      make(map[string]*Action, len(cfg.Actions)),
 		pollInterval: cfg.PollInterval,
 		logger:       cfg.Logger,
@@ -210,7 +202,7 @@ func New(cfg Config) (*Engine, error) {
 
 // Run starts the engine: registers every shortcut, registers the
 // persistent toggle hotkey (if any), starts the hotkey listener, and
-// launches the blocklist polling goroutine.
+// launches the permission polling goroutine (AX / Screen Recording).
 //
 // It blocks only briefly during setup; the polling goroutine is owned
 // by the supplied context. Cancel ctx to shut down cleanly.
@@ -235,7 +227,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err := e.hkmgr.Start(); err != nil {
 		return fmt.Errorf("engine: hotkey listener: %w", err)
 	}
-	go e.blocklistPoller(ctx)
+	go e.permissionPoller(ctx)
 	return nil
 }
 
@@ -247,9 +239,8 @@ func (e *Engine) Stop() { e.hkmgr.Stop() }
 // effectively active.
 //
 // Note: even though we dynamically unregister hotkeys when suspended, we
-// keep the in-handler check as defense-in-depth in case a key fires
-// during the small window between blocklist app activation and the next
-// poll tick.
+// keep the in-handler check as defense-in-depth if a key fires during a
+// brief race with SetSuspended.
 //
 // On error: logs via the engine logger AND records the message on the
 // snapshot so the tray can surface it. Also re-checks AX permission
@@ -279,8 +270,7 @@ func (e *Engine) recordError(msg string) {
 	e.lastErrMu.Unlock()
 }
 
-// effectivelyActive applies the user-mode override on top of the
-// automatic blocklist signal.
+// effectivelyActive applies the user-mode override.
 func (e *Engine) effectivelyActive() bool {
 	switch UserMode(e.userMode.Load()) {
 	case UserModeForceActive:
@@ -288,15 +278,14 @@ func (e *Engine) effectivelyActive() bool {
 	case UserModeForceSuspended:
 		return false
 	default:
-		return !e.autoSuspended.Load()
+		return true
 	}
 }
 
 // Execute runs an action by ID, bypassing the suspension middleware.
 //
 // Used by the tray UI: when a user explicitly clicks a menu item we
-// honor the request even if the foreground app is in the blocklist
-// (the user has expressed clear intent).
+// honor the request regardless of suspension (the user has expressed clear intent).
 func (e *Engine) Execute(actionID string) error {
 	e.mu.RLock()
 	a, ok := e.actByID[actionID]
@@ -337,12 +326,7 @@ func (e *Engine) SetUserSuspended(s bool) {
 // user-mode override. The toggle ALWAYS produces a visible change:
 //
 //   - If GWiM is currently active, the toggle force-suspends it.
-//   - If GWiM is currently suspended (manually OR by auto-blocklist),
-//     the toggle force-activates it, overriding auto-suspension.
-//
-// This satisfies the requirement that the user be able to enable GWiM
-// during a screen-sharing session without first dismissing the
-// foreground app.
+//   - If GWiM is currently suspended, the toggle force-activates it.
 func (e *Engine) ToggleUserSuspended() {
 	if e.effectivelyActive() {
 		e.SetUserMode(UserModeForceSuspended)
@@ -368,9 +352,7 @@ func (e *Engine) Snapshot() SuspensionState {
 	return SuspensionState{
 		UserMode:               mode,
 		UserSuspended:          mode == UserModeForceSuspended,
-		AutoSuspended:          e.autoSuspended.Load(),
 		ActiveAppID:            appID,
-		ActiveAppBlocked:       e.isBlocked(appID),
 		ManagedHotkeyCount:     len(e.shortcuts),
 		AccessibilityChecked:   e.axCheck != nil,
 		AccessibilityGranted:   e.axGranted.Load(),
@@ -410,23 +392,18 @@ func (e *Engine) RefreshScreenRecording() {
 }
 
 // AddListener subscribes a callback for suspension-state changes. The
-// callback runs on the engine's poller goroutine, so it must be cheap
-// and non-blocking; long work should be queued.
+// callback runs on the permission poller goroutine (and from applySuspension),
+// so it must be cheap and non-blocking; long work should be queued.
 func (e *Engine) AddListener(fn func(SuspensionState)) {
 	e.listenerMu.Lock()
 	e.listeners = append(e.listeners, fn)
 	e.listenerMu.Unlock()
 }
 
-// blocklistPoller periodically checks the foreground application and
-// updates auto-suspension. We use polling rather than NSWorkspace
-// notifications to keep the cgo surface small and the architecture
-// portable to Windows (where GetForegroundWindow is the canonical poll).
-//
-// Same loop also refreshes the accessibility-permission grant when one
-// was supplied via Config — that way the tray notices within
-// PollInterval if the user toggles permission in System Settings.
-func (e *Engine) blocklistPoller(ctx context.Context) {
+// permissionPoller periodically refreshes accessibility and screen-recording
+// grants when configured, so the tray reflects System Settings changes
+// within PollInterval.
+func (e *Engine) permissionPoller(ctx context.Context) {
 	t := time.NewTicker(e.pollInterval)
 	defer t.Stop()
 	for {
@@ -437,23 +414,12 @@ func (e *Engine) blocklistPoller(ctx context.Context) {
 			changed := false
 			reason := ""
 
-			appID, err := e.wmgr.GetActiveAppIdentifier()
-			if err == nil {
-				blocked := e.isBlocked(appID)
-				if e.autoSuspended.Load() != blocked {
-					e.autoSuspended.Store(blocked)
-					changed = true
-					reason = fmt.Sprintf("active app=%q blocked=%t", appID, blocked)
-				}
-			}
 			if e.axCheck != nil {
 				granted := e.axCheck()
 				if e.axGranted.Load() != granted {
 					e.axGranted.Store(granted)
 					changed = true
-					if reason == "" {
-						reason = fmt.Sprintf("accessibility -> %t", granted)
-					}
+					reason = fmt.Sprintf("accessibility -> %t", granted)
 				}
 			}
 			if e.srCheck != nil {
@@ -476,8 +442,7 @@ func (e *Engine) blocklistPoller(ctx context.Context) {
 // applySuspension propagates the effective suspension state to the
 // HotkeyManager and broadcasts to listeners.
 //
-// "Effective" means the result of resolving UserMode against the
-// automatic blocklist signal — see effectivelyActive.
+// "Effective" means the result of user mode — see effectivelyActive.
 func (e *Engine) applySuspension(reason string) {
 	suspended := !e.effectivelyActive()
 	if e.hkmgr.Suspended() != suspended {
@@ -492,39 +457,4 @@ func (e *Engine) applySuspension(reason string) {
 	for _, fn := range listeners {
 		fn(snap)
 	}
-}
-
-// isBlocked reports whether the supplied app identifier matches the
-// hardcoded blocklist (case-insensitive equality on the bundle ID).
-func (e *Engine) isBlocked(appID string) bool {
-	if appID == "" {
-		return false
-	}
-	for _, b := range e.blocklist {
-		if equalFold(b, appID) {
-			return true
-		}
-	}
-	return false
-}
-
-// equalFold is a tiny ASCII case-insensitive comparator. We avoid
-// strings.EqualFold to skip the unicode work — bundle IDs are ASCII.
-func equalFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }

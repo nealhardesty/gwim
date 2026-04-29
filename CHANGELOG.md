@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Removed automatic remote-desktop suspension.** GWiM no longer
+  auto-suspends when remote-desktop, VNC, or Screen Sharing apps are
+  foreground. Use the menu bar or **`Ctrl+Alt+X`** to suspend or resume
+  hotkeys. The `Engine` no longer takes a blocklist; the permission
+  poller only refreshes Accessibility and Screen Recording state for the
+  tray.
+
 ### Added
 
 - **Alt-Tab window switcher** (per `ALTTAB.md`). New chord `⌥⇥` / `⌥⇧⇥`

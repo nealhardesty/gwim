@@ -7,7 +7,7 @@
 //   - A "Shortcuts" submenu listing every action with its accelerator;
 //     each item is clickable and triggers Engine.Execute, satisfying the
 //     PRD §3.2 requirement that menu items act as remote-control buttons.
-//   - A footer showing the foreground app and the auto-suspension reason.
+//   - A footer showing the foreground app and permission status rows.
 //   - Optional Open at Login (platform supplies hooks on macOS).
 //   - Quit.
 package ui
@@ -321,9 +321,8 @@ func (t *Tray) handleLaunchAtLogin() {
 
 // refresh updates icon, status text, and toggle label to match state.
 //
-// Status text reflects which axis (user override vs. automatic blocklist)
-// drove the current state, plus the foreground app, so the user can
-// always tell why GWiM did or did not respond to a hotkey.
+// Status text reflects manual suspend vs active (including after-toggle
+// “forced on”), plus the foreground app for context.
 func (t *Tray) refresh(s engine.SuspensionState) {
 	if s.Active() {
 		systray.SetIcon(icon.Active())
@@ -337,19 +336,12 @@ func (t *Tray) refresh(s engine.SuspensionState) {
 	} else {
 		systray.SetIcon(icon.Suspended())
 		t.mItemSuspend.SetTitle(t.suspendLabel(false))
-		switch s.UserMode {
-		case engine.UserModeForceSuspended:
-			t.mItemActive.SetTitle("Status: Suspended (forced off)")
-		default: // UserModeAuto with AutoSuspended=true
-			t.mItemActive.SetTitle("Status: Auto-suspended (blocklist)")
-		}
+		t.mItemActive.SetTitle("Status: Suspended")
 	}
 
 	switch {
 	case s.ActiveAppID == "":
 		t.mItemStatus.SetTitle("Foreground: (unknown)")
-	case s.ActiveAppBlocked:
-		t.mItemStatus.SetTitle(fmt.Sprintf("Foreground: %s [blocked]", s.ActiveAppID))
 	default:
 		t.mItemStatus.SetTitle(fmt.Sprintf("Foreground: %s", s.ActiveAppID))
 	}

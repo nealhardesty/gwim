@@ -54,7 +54,6 @@ func startApp() error {
 		Actions:       actions,
 		Shortcuts:     shortcuts,
 		ToggleHotkey:  toggle,
-		Blocklist:     engine.DefaultBlocklist(),
 		// NON-prompting check — the engine polls this every tick to keep
 		// the tray's "Accessibility: granted/denied" row honest.
 		AccessibilityCheck:   func() bool { return macos.RequestAccessibilityPermission(false) },

@@ -6,7 +6,11 @@ Github Repo will be at https://github.com/nealhardesty/gwim
 ## 1. Project Overview
 **GWiM** is a lightweight, compiled background application written in Golang that provides keyboard-driven window management, replacing a legacy Hammerspoon (Lua) setup. The application allows users to resize, tile, move, and throw windows between screens using specific hotkey combinations. 
 
-To ensure seamless workflows, GWiM features **context-aware suspension**, automatically yielding hotkey control to foregrounded remote desktop applications. It also includes a **System Tray / Menu Bar UI** for quick toggling and interactive shortcut execution.
+To ensure seamless workflows when using remote desktops or similar apps,
+GWiM supports **manual suspension**: hotkeys can be turned off from the
+menu bar or with **`Ctrl+Alt+X`** so keystrokes reach the foreground app
+unchanged. It also includes a **System Tray / Menu Bar UI** for toggling and
+interactive shortcut execution.
 
 The initial target is macOS, utilizing direct OS API calls via `cgo` (Accessibility API, Carbon/Cocoa), with an architecture designed to easily support Windows (`user32.dll` / `WinAPI`) in a fast-follow update.
 
@@ -16,7 +20,7 @@ The initial target is macOS, utilizing direct OS API calls via `cgo` (Accessibil
 **Goals:**
 * Achieve 1:1 functional parity with the original legacy Hammerspoon script.
 * Use Golang as the primary language with minimal external dependencies.
-* Implement context-aware suspension to prevent hotkey conflicts with remote control sessions.
+* Provide optional manual suspension so users can yield hotkey control when using remote desktop or similar clients (menu bar or **`Ctrl+Alt+X`**).
 * Provide a Menu Bar (macOS) / System Tray (Windows) interface with an interactive shortcut reference.
 * Structure the codebase to abstract platform-specific window manipulation, hotkey registration, and UI rendering.
 
@@ -30,18 +34,12 @@ The initial target is macOS, utilizing direct OS API calls via `cgo` (Accessibil
 
 ## 3. Functional Requirements
 
-### 3.1. Context-Aware Suspension
-The application must dynamically evaluate the foreground (active) application. If the active application is a known remote control or virtualization client, GWiM must temporarily suspend its global hotkey hooks, allowing the remote machine to receive the hotkeys.
-* **Target Applications (macOS Bundle IDs / Windows Executables):**
-    * *Windows App / Microsoft Remote Desktop* (`com.microsoft.rdc.macos` / `mstsc.exe`)
-    * *Apple Screen Sharing* (`com.apple.ScreenSharing`)
-    * *VNC Viewers* (e.g., RealVNC `com.realvnc.vncviewer`)
-    * *Parallels Desktop / VMware Fusion* (Optional/Configurable)
-* **Logic:** When a registered hotkey is pressed, the engine checks the active application identifier against a hardcoded (or configuration-based) blocklist. If there is a match, the key event is passed through to the OS unhandled.
+### 3.1. Manual Suspension
+The user must be able to suspend global hotkey hooks so keystrokes reach the foreground application (for example a remote-desktop client). Suspension is **explicit**: via the menu bar **Suspend / Activate** item or the persistent **`Ctrl+Alt+X`** shortcut. While suspended, regular shortcuts are not dispatched; the tray **Shortcuts** submenu still runs actions on click (explicit intent). There is **no** automatic suspension based on the foreground application's bundle identifier.
 
 ### 3.2. Menu Bar / System Tray UI
 The application must run with an icon in the macOS Menu Bar (and eventually the Windows System Tray).
-* **Toggle State:** A menu item to manually Suspend/Activate the application (overriding the context-aware logic if suspended).
+* **Toggle State:** A menu item to manually Suspend/Activate the application.
 * **Interactive Reference:** A menu item that opens a sub-menu listing all available shortcuts.
     * These listed shortcuts must be **clickable**. Clicking a shortcut in the UI should execute the corresponding window management action on the currently active window, exactly as if the hotkey was pressed.
 * **Quit:** A clean exit option.
@@ -162,7 +160,7 @@ type HotkeyManager interface {
 
 ### 4.3. macOS Implementation (`internal/platform/macos/`)
 * **Window Management:** Implement via macOS Accessibility API (`AXUIElement`) and `CGO` using `<ApplicationServices/ApplicationServices.h>`.
-* **Active App Detection:** Use `NSWorkspace sharedWorkspace frontmostApplication bundleIdentifier` via CGO/Objective-C to fetch the active app identifier for the suspension check.
+* **Active App Detection:** Use `NSWorkspace sharedWorkspace frontmostApplication bundleIdentifier` via CGO/Objective-C to fetch the active app identifier for status display in the tray.
 * **Hotkey Management:** Use `NSEvent addGlobalMonitorForEventsMatchingMask` or Carbon's `RegisterEventHotKey`.
 * **Alt-Tab Switcher** (`altswitch_native.m` + `altswitch.go`): borderless
   `NSWindow` overlay drawn from a custom `NSView`; `CGEventTap` for
@@ -183,14 +181,12 @@ type HotkeyManager interface {
 
 ### 4.4. Windows Extensibility (`internal/platform/windows/`)
 *(To be scaffolded)*
-* **Window Management & Detection:** Use `x/sys/windows` for `GetForegroundWindow()`, `GetWindowThreadProcessId()`, and `QueryFullProcessImageNameW()` (to get the `.exe` name for suspension logic).
+* **Window Management & Detection:** Use `x/sys/windows` for `GetForegroundWindow()`, `GetWindowThreadProcessId()`, and `QueryFullProcessImageNameW()` (executable identification for parity with macOS foreground display).
 * **Hotkeys:** Use `RegisterHotKey` from `user32.dll`.
 
 ### 4.5. Business Logic Layer (`internal/engine/`)
 * **Action Dispatcher:** The engine maps shortcuts to functions. Crucially, these functions must be accessible both by the `HotkeyManager` (when a key is pressed) and the `TrayUI` (when a menu item is clicked).
-* **Middleware/Interceptor:** Before executing any window manipulation triggered by a keyboard shortcut, the engine evaluates:
-    1. Is the app manually suspended via the Tray UI? -> *Ignore event.*
-    2. Is `wm.GetActiveAppIdentifier()` in the blocklist? -> *Ignore event.*
+* **Middleware/Interceptor:** Before executing any window manipulation triggered by a keyboard shortcut, the engine evaluates whether the app is manually suspended (menu bar or **`Ctrl+Alt+X`**). If suspended, the shortcut is ignored; tray clicks still invoke **`Execute`** (explicit user intent).
 
 ---
 
@@ -208,6 +204,6 @@ type HotkeyManager interface {
     * Active application bundle ID retrieval (`NSWorkspace`).
     * Global hotkey registration.
 4.  **Build the Logic Engine:** Map the hotkeys to layout calculations. Implement the `ActionDispatcher` so both hotkeys and UI clicks can trigger the exact same functions.
-5.  **Implement the Blocklist Logic:** Create the interceptor that checks the foreground app against the hardcoded list (`com.microsoft.rdc.macos`, etc.).
+5.  **Wire suspension:** Ensure manual suspend unregisters regular hotkeys with the OS while keeping the **`Ctrl+Alt+X`** toggle registered (`RegisterPersistent`).
 6.  **Wire the Tray UI:** Set up the `systray` main loop, add the Suspend toggle, and generate the interactive dropdown/popup list of shortcuts.
 7.  **Provide Build Scripts:** Write a `Makefile` that compiles the Go binary, generates the `.app` bundle structure, writes the `Info.plist`, and injects the required macOS icons (`.icns`).
