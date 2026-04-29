@@ -1,0 +1,181 @@
+# GWiM — Windows-native Makefile
+#
+# Sibling to the canonical ./Makefile (which targets macOS / *nix and
+# requires awk + find + mkdir -p + ditto + codesign + iconutil + ...).
+# This file is the Windows-native counterpart: it uses only Go and cmd
+# builtins so it works from a vanilla Windows install with no MSYS2 /
+# Git Bash / coreutils setup beyond Go itself.
+#
+# Usage from cmd / PowerShell / mingw32-make:
+#
+#     make -f Makefile.windows help
+#     make -f Makefile.windows build          # -> dist\gwim.exe
+#     make -f Makefile.windows test
+#     make -f Makefile.windows icons          # regenerate tray ICOs from PNGs
+#
+# macOS / Linux developers should keep using the regular ./Makefile.
+# Targets exclusive to the macOS bundle pipeline (.app, codesign,
+# install, release, push) are intentionally NOT replicated here; they
+# don't apply to Windows.
+
+# ---------------------------------------------------------------------------
+# Shell selection
+# ---------------------------------------------------------------------------
+#
+# Force cmd.exe so recipes can rely on cmd builtins (`if not exist`,
+# `mkdir`, `rd /S /Q`, `del`). Without this, mingw32-make may pick up
+# a sh.exe from Git Bash / MSYS2 if either is on PATH and our recipes
+# would silently swap shell semantics underneath us.
+
+SHELL       := cmd.exe
+.SHELLFLAGS := /c
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+BINARY        := gwim.exe
+PKG           := github.com/nealhardesty/gwim
+CMD           := .
+BUILD_DIR     := dist
+
+GO            := go
+LDFLAGS       := -s -w
+BUILD_FLAGS   := -trimpath -ldflags "$(LDFLAGS)"
+
+VERSION_FILE  := version.go
+
+# Extract the version string via PowerShell — no awk on stock Windows.
+# We avoid embedded `\"` because mingw32-make's $(shell ...) doesn't
+# always wrap the call in cmd.exe consistently and PowerShell would
+# otherwise re-interpret stray escapes. `[char]34` is the literal
+# double-quote character; splitting on it gives us the version. Falls
+# back to empty if PowerShell is missing (purely cosmetic — the binary
+# embeds Version itself via version.go).
+VERSION := $(shell powershell -NoProfile -Command "((Get-Content $(VERSION_FILE)) -match 'const Version').Split([char]34)[1]")
+
+# Embedded tray icons consumed by //go:embed in internal/icon.
+#
+# The PNGs are hand-drawn source assets — the build never regenerates
+# them. The ICOs are derived from the PNGs by gen-icon (single-entry
+# PNG-in-ICO containers); a fresh PNG triggers an ICO refresh on the
+# next build, surfacing as a working-tree diff so the new ICO gets
+# committed alongside the artwork change.
+ICON_PNG_SOURCES := \
+	internal\icon\assets\icon-active.png \
+	internal\icon\assets\icon-suspended.png
+
+ICON_ICO_DERIVED := \
+	internal\icon\assets\icon-active.ico \
+	internal\icon\assets\icon-suspended.ico
+
+EMBED_ICONS := $(ICON_PNG_SOURCES) $(ICON_ICO_DERIVED)
+
+.DEFAULT_GOAL := help
+
+# ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
+
+.PHONY: help
+help: ## Show this help message
+	@echo GWiM Windows Makefile - version $(VERSION)
+	@echo.
+	@echo Usage:  make -f Makefile.windows ^<target^>
+	@echo.
+	@echo Targets:
+	@echo   build              Compile gwim.exe into .\dist
+	@echo   build-windows      Alias for build (parity with the *nix Makefile)
+	@echo   run                Build then launch in the foreground
+	@echo   test               go test -race ./...
+	@echo   test-short         go test ./...
+	@echo   vet                go vet ./...
+	@echo   fmt                go fmt ./...
+	@echo   tidy               go mod tidy
+	@echo   check              fmt + vet + test (pre-commit gate)
+	@echo   icons              Regenerate tray ICOs from the hand-drawn PNGs
+	@echo   clean              Remove dist\ build artifacts
+	@echo   version            Print the current version
+	@echo   deps               Download / verify go module dependencies
+
+# ---------------------------------------------------------------------------
+# Build / run
+# ---------------------------------------------------------------------------
+
+# We deliberately do NOT track every .go file as a Make prerequisite the
+# way the *nix Makefile does (its `find . -name '*.go'` recipe doesn't
+# work under Windows' find.exe). Go's own build cache handles
+# incremental compilation correctly; making `build` always run the go
+# command is faster than a stat scan over the tree and avoids the
+# portability foot-gun.
+.PHONY: build build-windows
+build build-windows: $(EMBED_ICONS) ## Compile gwim.exe into .\dist
+	@if not exist "$(BUILD_DIR)" mkdir "$(BUILD_DIR)"
+	@echo == Building $(BINARY) $(VERSION)
+	$(GO) build $(BUILD_FLAGS) -o $(BUILD_DIR)\$(BINARY) $(CMD)
+
+.PHONY: run
+run: build ## Build then launch in the foreground (logs go to stdout)
+	$(BUILD_DIR)\$(BINARY)
+
+# ---------------------------------------------------------------------------
+# Icons
+# ---------------------------------------------------------------------------
+
+# Regenerate the derived ICOs whenever a source PNG or the generator
+# itself changes. The PNGs are NOT regenerated — they're hand-drawn
+# tracked source assets; gen-icon reads them and emits PNG-in-ICO
+# containers around them.
+$(ICON_ICO_DERIVED): $(ICON_PNG_SOURCES) scripts\gen-icon\main.go
+	@$(GO) run .\scripts\gen-icon
+
+.PHONY: icons
+icons: ## Regenerate tray ICOs from the hand-drawn PNGs (also picked up by `build`)
+	$(GO) run .\scripts\gen-icon
+
+# ---------------------------------------------------------------------------
+# Tests / quality
+# ---------------------------------------------------------------------------
+
+.PHONY: test
+test: ## Run unit tests with the race detector
+	$(GO) test -race ./...
+
+.PHONY: test-short
+test-short: ## Run unit tests without -race (faster, weaker guarantees)
+	$(GO) test ./...
+
+.PHONY: vet
+vet: ## go vet across all packages
+	$(GO) vet ./...
+
+.PHONY: fmt
+fmt: ## Format every Go file with gofmt
+	$(GO) fmt ./...
+
+.PHONY: tidy
+tidy: ## Tidy go.mod / go.sum
+	$(GO) mod tidy
+
+.PHONY: lint
+lint: vet ## Currently an alias for vet
+
+.PHONY: check
+check: fmt vet test ## Run fmt, vet, and tests — pre-commit gate
+
+# ---------------------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------------------
+
+.PHONY: clean
+clean: ## Remove build artifacts (dist\)
+	@if exist "$(BUILD_DIR)" rd /S /Q "$(BUILD_DIR)"
+
+.PHONY: version
+version: ## Print the current version string
+	@echo $(VERSION)
+
+.PHONY: deps
+deps: ## Download / verify go module dependencies
+	$(GO) mod download
+	$(GO) mod verify

@@ -122,7 +122,7 @@ func (t *Tray) build() {
 		t.LaunchAtLogin.IsOn != nil && t.LaunchAtLogin.Set != nil {
 		on := t.LaunchAtLogin.IsOn()
 		t.mItemLaunch = systray.AddMenuItemCheckbox("Open at Login",
-			"Launch GWiM when you log in (macOS 13+, from GWiM.app)", on)
+			"Launch GWiM automatically when you log in", on)
 		go t.handleLaunchAtLogin()
 	}
 
@@ -136,6 +136,7 @@ func (t *Tray) build() {
 	// AX status is clickable — clicking opens System Settings so the
 	// user can fix a denied permission without hunting through menus.
 	t.mItemAccess = systray.AddMenuItem("Accessibility: (checking…)", "Click to open System Settings")
+	t.mItemAccess.Hide() // unhide in refresh() once we know we have a probe configured
 	// Screen Recording is the optional companion permission — granted
 	// state enables live window thumbnails in the Alt-Tab switcher.
 	t.mItemScreen = systray.AddMenuItem("Screen Recording: (checking…)", "Click to enable live thumbnails in the switcher")
@@ -329,13 +330,20 @@ func (t *Tray) refresh(s engine.SuspensionState) {
 	// Accessibility row — the headline diagnostic. Without AX permission
 	// every action silently no-ops; the user's only clue used to be log
 	// output they couldn't see. This row makes it obvious.
-	switch {
-	case !s.AccessibilityChecked:
-		t.mItemAccess.SetTitle("Accessibility: (unknown)")
-	case s.AccessibilityGranted:
-		t.mItemAccess.SetTitle("Accessibility: granted ✓")
-	default:
-		t.mItemAccess.SetTitle("Accessibility: DENIED — click to fix")
+	//
+	// We hide the row entirely when the engine wasn't configured with a
+	// probe (e.g. Windows builds, where there is no equivalent OS-level
+	// permission gate) so the tray stays clean. macOS always supplies a
+	// probe so this is a no-op there.
+	if !s.AccessibilityChecked {
+		t.mItemAccess.Hide()
+	} else {
+		t.mItemAccess.Show()
+		if s.AccessibilityGranted {
+			t.mItemAccess.SetTitle("Accessibility: granted ✓")
+		} else {
+			t.mItemAccess.SetTitle("Accessibility: DENIED — click to fix")
+		}
 	}
 
 	// Screen Recording row — informational. The Alt-Tab switcher

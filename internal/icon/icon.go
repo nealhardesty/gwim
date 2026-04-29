@@ -1,23 +1,25 @@
-// Package icon provides the embedded menu-bar icons used by the systray UI.
+// Package icon provides the embedded menu-bar / system-tray icons used by
+// the systray UI.
 //
-// We ship two PNG variants: an "active" icon shown while GWiM is dispatching
+// We ship two variants — an "active" icon shown while GWiM is dispatching
 // hotkeys, and a "suspended" icon shown while suspended from the menu or
-// toggle shortcut. Both are generated procedurally at compile
-// time by scripts/gen-icon to avoid checking binary assets into git.
+// toggle shortcut — in whichever raster format the host platform's tray
+// API expects:
+//
+//   - macOS (NSStatusItem) consumes a PNG. See [icon_darwin.go].
+//   - Windows (Shell_NotifyIcon) consumes an ICO. See [icon_windows.go].
+//
+// The platform-tagged files declare the embedded byte slices (`active`,
+// `suspended`); this file only exposes the small accessor surface so the
+// systray UI doesn't need to know which format it's looking at. Both
+// variants are generated procedurally at build time by
+// `scripts/gen-icon`.
 package icon
 
-import (
-	_ "embed"
-)
-
-//go:embed assets/icon-active.png
-var active []byte
-
-//go:embed assets/icon-suspended.png
-var suspended []byte
-
-// Active returns the PNG bytes for the active state.
+// Active returns the icon bytes for the active state, in the native format
+// expected by the host platform's tray API (PNG on macOS, ICO on Windows).
 func Active() []byte { return active }
 
-// Suspended returns the PNG bytes for the suspended state.
+// Suspended returns the icon bytes for the suspended state, in the native
+// format expected by the host platform's tray API.
 func Suspended() []byte { return suspended }

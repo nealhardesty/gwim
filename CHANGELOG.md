@@ -6,7 +6,78 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Windows port** (`internal/platform/windows/`). GWiM now runs on
+  Windows 10 / 11 with full feature parity except the Alt-Tab switcher
+  (Windows already has its own Alt+Tab). Pure-Go `syscall` bindings to
+  `user32.dll` / `kernel32.dll` — no cgo, no MinGW. New files:
+  - `keycodes.go` — VK_* / MOD_* tables; `cmd` / `win` / `meta` all
+    alias to `MOD_WIN` so the cross-platform shortcut table works
+    unchanged. `MOD_NOREPEAT` is OR'd into every binding so a held key
+    doesn't fire repeatedly.
+  - `window.go` — `winWindow` (`SetWindowPos` / `GetWindowRect` /
+    `IsZoomed` / `ShowWindow`) and `winWindowManager` with multi-monitor
+    enumeration via `EnumDisplayMonitors` + `MonitorFromWindow`. The
+    `MoveWindowToScreen` neighbor logic is shared verbatim with the
+    macOS implementation since both platforms use top-left-origin rects.
+  - `workspace.go` — active-app identifier via `GetForegroundWindow` →
+    `GetWindowThreadProcessId` → `OpenProcess` → `QueryFullProcessImageNameW`,
+    returning the EXE basename (e.g. `chrome.exe`).
+  - `hotkey.go` — `winHotkeyManager` with a dedicated OS-thread message
+    pump driving `RegisterHotKey` / `UnregisterHotKey`. Cross-thread
+    register / suspend / quit requests flow through `PostThreadMessageW`.
+    Persistent vs regular split mirrors macOS (Ctrl+Alt+X stays bound
+    while regular hotkeys are suspended).
+  - `launchatlogin.go` — Open at Login via the standard
+    `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` registry key
+    (no admin rights). Toggleable from the tray.
+  - `Ctrl+Alt+F` toggles **borderless fullscreen** on Windows (strip
+    `WS_OVERLAPPEDWINDOW`, fill containing monitor; restore on toggle-off).
+- **Windows ICO tray icons.** `scripts/gen-icon` derives
+  `internal/icon/assets/icon-{active,suspended}.ico` from the
+  hand-drawn `icon-{active,suspended}.png` source assets by wrapping
+  the PNG payload verbatim in a single-entry PNG-in-ICO container —
+  the menu-bar PNGs are now tracked source files and the build never
+  rewrites them. The icon package uses build-tagged embed files so
+  macOS gets PNGs and Windows gets ICOs through the same `Active()` /
+  `Suspended()` API. A stdlib-only `scripts/bootstrap_ico.py` mirror
+  exists for refreshing the ICOs without a Go install (e.g. when only
+  the artwork has changed).
+- **`make build-windows` Makefile target** for cross-compiling a Windows
+  `.exe` from any host (CGO disabled). Supplements the existing macOS
+  bundle pipeline.
+- **Native cheatsheet notation per platform.** The tray's Shortcuts
+  submenu and the Suspend item's accelerator label now render in the
+  host's native style: macOS glyphs (`⌃⌥H`, `⌃⌥⇧↩`) on darwin,
+  Microsoft-standard text (`Ctrl+Alt+H`, `Ctrl+Alt+Shift+Enter`) on
+  Windows. `formatShortcut` and `keyDisplay` were split into
+  `internal/engine/shortcuts_format_{darwin,windows,other}.go` via
+  build tags; the platform-agnostic `PrimaryShortcutFor` /
+  `ToggleHotkey.Format` API is unchanged. Modifier order on Windows
+  follows the Microsoft style guide (Win→Ctrl→Alt→Shift→Key).
+- **`Makefile.windows`** — sibling build file for native Windows hosts
+  that lack the Unix toolchain (`awk` / `find` / `mkdir -p` / …) the
+  canonical Makefile assumes. Uses cmd builtins + PowerShell so a
+  vanilla Windows install with Go on PATH can run `make -f
+  Makefile.windows build` / `test` / `icons` / `clean` / etc. without
+  setting up Git Bash or MSYS2 first. The macOS Makefile is
+  deliberately untouched.
+
 ### Changed
+
+- **`internal/icon` split by build tag**: `icon.go` exposes the API only;
+  the embedded byte slices live in `icon_darwin.go` (PNG),
+  `icon_windows.go` (ICO), and an `icon_other.go` PNG fallback for any
+  third-party platform.
+- **Tray hides the Accessibility row when no probe is configured.** The
+  `internal/ui/tray.go` `refresh()` path now hides the Accessibility row
+  when `SuspensionState.AccessibilityChecked` is false (Windows builds)
+  rather than displaying a misleading `"Accessibility: (unknown)"` label.
+  macOS always supplies the probe, so this is a no-op there.
+- **`golang.org/x/sys` bumped from `v0.1.0` to `v0.30.0`.** Required so
+  `golang.org/x/sys/windows/registry` is available for the Open-at-Login
+  helper. macOS build is unaffected.
 
 - **Alt-Tab overlay on all displays.** The switcher opens one mirrored
   borderless panel per connected `NSScreen`, each centred in that display's

@@ -1,16 +1,27 @@
-// Package windows is reserved for the Windows port of GWiM (PRD §4.4).
+// Package windows is the Windows port of GWiM (PRD §4.4). It implements
+// the same wm.WindowManager and wm.HotkeyManager interfaces backed by
+// pure Win32 (user32.dll / kernel32.dll) — no cgo required.
 //
-// The architecture mirrors internal/platform/macos:
+// File layout mirrors internal/platform/macos:
 //
-//   - Window manipulation via golang.org/x/sys/windows + user32.dll
-//     (SetWindowPos, GetWindowRect, SetForegroundWindow).
-//   - Active-app detection via GetForegroundWindow,
-//     GetWindowThreadProcessId, QueryFullProcessImageNameW (the executable
-//     base name fills the role of macOS bundle ID for foreground identification).
-//   - Global hotkeys via RegisterHotKey / UnregisterHotKey from user32.dll
-//     with a hidden message-only window pumping WM_HOTKEY.
+//   - keycodes.go     — VK_* / MOD_* tables and modifier-mask helpers.
+//   - window.go       — winWindow + winWindowManager: SetWindowPos /
+//     GetWindowRect / MonitorFromWindow + multi-monitor neighbor logic
+//     and borderless-fullscreen toggle with per-HWND state stash.
+//   - workspace.go    — active-app identifier (GetForegroundWindow ->
+//     QueryFullProcessImageNameW returning the EXE basename).
+//   - hotkey.go       — winHotkeyManager: dedicated OS-thread message
+//     pump driving RegisterHotKey / UnregisterHotKey via WM_HOTKEY.
+//     Cross-thread requests (register / suspend / quit) are delivered
+//     through PostThreadMessageW.
+//   - launchatlogin.go — Open at Login via the HKCU Run registry key,
+//     so the user can opt into auto-start on login without admin rights.
 //
-// No source files exist in this package yet — when the port begins, add
-// `//go:build windows` files implementing wm.WindowManager and
-// wm.HotkeyManager and wire them in main_windows.go at the module root.
+// The Alt-Tab window switcher (internal/altswitch + macos/altswitch_native.m)
+// is intentionally NOT ported — Windows already provides Alt+Tab natively.
+//
+// Threading: Win32 hotkey events fire on the queue of the thread that
+// called RegisterHotKey, so winHotkeyManager owns a dedicated OS-thread-
+// locked goroutine for the lifetime of the manager. The systray UI runs
+// on the main thread (main_windows.go locks it before tray.Run).
 package windows

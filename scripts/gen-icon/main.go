@@ -1,16 +1,30 @@
-// gen-icon generates the menu-bar icons embedded into the GWiM binary.
+// gen-icon produces the derived icon assets embedded into the GWiM binary.
 //
-// It produces:
-//   - internal/icon/assets/icon-active.png    (filled grid "G")
-//   - internal/icon/assets/icon-suspended.png (outlined grid "G")
+// What it WRITES:
+//   - internal/icon/assets/icon-active.ico    (Windows tray; wraps icon-active.png)
+//   - internal/icon/assets/icon-suspended.ico (Windows tray; wraps icon-suspended.png)
 //   - assets/icon.iconset/*                   (multi-resolution PNGs for iconutil)
 //
-// Run via `make icons`. The script has no external dependencies — it draws
-// directly with image/draw and image/png from the standard library so the
-// build works on a vanilla Go installation.
+// What it READS but never writes:
+//   - internal/icon/assets/icon-active.png    (hand-drawn, committed source)
+//   - internal/icon/assets/icon-suspended.png (hand-drawn, committed source)
+//
+// The two menu-bar PNGs are tracked source assets. Earlier revisions of
+// this script drew them procedurally (a 2x2 grid motif), but the
+// project switched to hand-drawn artwork — so this script must NOT
+// touch the PNGs even on `make icons`. It only derives the Windows ICO
+// container around them.
+//
+// Run via `make icons` (or `make -f Makefile.windows icons`). The
+// script has no external dependencies beyond the Go standard library;
+// ICO files are emitted via a hand-rolled encoder (ICONDIR +
+// ICONDIRENTRY records wrapping the PNG payload; PNG-in-ICO has been
+// supported since Windows Vista which is well below the GWiM minimum).
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
@@ -21,12 +35,19 @@ import (
 )
 
 const (
-	menuIconSize     = 22 // points; matches NSStatusItem default
-	menuIconScale    = 2  // @2x retina
-	bundleIconSize   = 1024
-	tintR, tintG     = 30, 60
-	tintB, tintA     = 100, 255
-	dimR, dimG, dimB = 120, 120, 120
+	tintR, tintG = 30, 60
+	tintB, tintA = 100, 255
+)
+
+// Asset paths. The PNGs are inputs to the ICO encoder; we keep the
+// constants here as a single source of truth so the Makefile and this
+// script can't drift.
+const (
+	menuPNGActive    = "internal/icon/assets/icon-active.png"
+	menuPNGSuspended = "internal/icon/assets/icon-suspended.png"
+	menuICOActive    = "internal/icon/assets/icon-active.ico"
+	menuICOSuspended = "internal/icon/assets/icon-suspended.ico"
+	iconsetDir       = "assets/icon.iconset"
 )
 
 func main() {
@@ -37,30 +58,36 @@ func main() {
 }
 
 func run() error {
-	if err := os.MkdirAll("internal/icon/assets", 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll("assets/icon.iconset", 0o755); err != nil {
+	if err := os.MkdirAll(iconsetDir, 0o755); err != nil {
 		return err
 	}
 
-	active := drawMenuBar(true)
-	suspended := drawMenuBar(false)
-	if err := writePNG("internal/icon/assets/icon-active.png", active); err != nil {
-		return err
+	// Derive Windows ICO files from the hand-drawn menu-bar PNGs. We
+	// wrap the PNG payload verbatim in a single-entry ICO container so
+	// the ICO matches the exact pixels of the source — Windows tray
+	// scales the embedded PNG as needed for whatever DPI bucket is
+	// active.
+	if err := pngToICO(menuPNGActive, menuICOActive); err != nil {
+		return fmt.Errorf("active ICO: %w", err)
 	}
-	if err := writePNG("internal/icon/assets/icon-suspended.png", suspended); err != nil {
-		return err
+	if err := pngToICO(menuPNGSuspended, menuICOSuspended); err != nil {
+		return fmt.Errorf("suspended ICO: %w", err)
 	}
 
+	// macOS .icns iconset stays procedurally generated — it's a large
+	// multi-resolution bundle icon used only when `make app` builds the
+	// .app, and the simple 2x2 grid scales cleanly to every required
+	// size. If anyone wants the iconset to mirror the hand-drawn
+	// menu-bar art too, they'd need to commit pre-rasterised PNGs at
+	// each size and route them in here.
 	for _, sz := range []int{16, 32, 64, 128, 256, 512, 1024} {
 		img := drawBundleIcon(sz)
-		if err := writePNG(filepath.Join("assets/icon.iconset", iconsetName(sz, false)), img); err != nil {
+		if err := writePNG(filepath.Join(iconsetDir, iconsetName(sz, false)), img); err != nil {
 			return err
 		}
 		if sz <= 512 {
 			retina := drawBundleIcon(sz * 2)
-			if err := writePNG(filepath.Join("assets/icon.iconset", iconsetName(sz, true)), retina); err != nil {
+			if err := writePNG(filepath.Join(iconsetDir, iconsetName(sz, true)), retina); err != nil {
 				return err
 			}
 		}
@@ -78,43 +105,13 @@ func iconsetName(size int, retina bool) string {
 	return fmt.Sprintf("icon_%dx%d.png", size, size)
 }
 
-// drawMenuBar draws the small status-bar icon. We use a 2x2 grid of squares
-// (a stylised "G" / "window" motif) so users can tell GWiM apart in a busy
-// menu bar even at small size.
+// drawBundleIcon paints the .icns bundle icon — a larger version of
+// the same 2x2 grid motif. The Dock will scale these down as needed.
 //
-// Active variant is a solid tint; suspended variant is outline-only.
-func drawMenuBar(active bool) image.Image {
-	w := menuIconSize * menuIconScale
-	h := menuIconSize * menuIconScale
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	pad := w / 6
-	gap := 2 * menuIconScale
-	cell := (w - 2*pad - gap) / 2
-
-	var fill color.RGBA
-	if active {
-		fill = color.RGBA{tintR, tintG, tintB, tintA}
-	} else {
-		fill = color.RGBA{dimR, dimG, dimB, 255}
-	}
-
-	for row := 0; row < 2; row++ {
-		for col := 0; col < 2; col++ {
-			x0 := pad + col*(cell+gap)
-			y0 := pad + row*(cell+gap)
-			rect := image.Rect(x0, y0, x0+cell, y0+cell)
-			if active {
-				draw.Draw(img, rect, &image.Uniform{C: fill}, image.Point{}, draw.Src)
-			} else {
-				strokeRect(img, rect, fill, menuIconScale)
-			}
-		}
-	}
-	return img
-}
-
-// drawBundleIcon paints a larger version of the same motif for the .icns
-// bundle icon. The Dock will scale these down as needed.
+// This is the ONLY procedurally-drawn output left after the menu-bar
+// PNGs became hand-drawn assets; if the bundle icon ever needs to
+// match new artwork, replace this function with hand-drawn input PNGs
+// at each iconset size (16, 32, 64, 128, 256, 512, 1024 plus @2x).
 func drawBundleIcon(size int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	bg := color.RGBA{245, 245, 250, 255}
@@ -135,22 +132,6 @@ func drawBundleIcon(size int) image.Image {
 	return img
 }
 
-// strokeRect draws a hollow rectangle of the given thickness onto img.
-func strokeRect(img *image.RGBA, r image.Rectangle, c color.RGBA, thickness int) {
-	if thickness < 1 {
-		thickness = 1
-	}
-	top := image.Rect(r.Min.X, r.Min.Y, r.Max.X, r.Min.Y+thickness)
-	bot := image.Rect(r.Min.X, r.Max.Y-thickness, r.Max.X, r.Max.Y)
-	left := image.Rect(r.Min.X, r.Min.Y, r.Min.X+thickness, r.Max.Y)
-	right := image.Rect(r.Max.X-thickness, r.Min.Y, r.Max.X, r.Max.Y)
-	src := &image.Uniform{C: c}
-	draw.Draw(img, top, src, image.Point{}, draw.Src)
-	draw.Draw(img, bot, src, image.Point{}, draw.Src)
-	draw.Draw(img, left, src, image.Point{}, draw.Src)
-	draw.Draw(img, right, src, image.Point{}, draw.Src)
-}
-
 func writePNG(path string, img image.Image) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -158,4 +139,55 @@ func writePNG(path string, img image.Image) error {
 	}
 	defer f.Close()
 	return png.Encode(f, img)
+}
+
+// pngToICO reads the hand-drawn PNG at srcPath and writes a Windows
+// ICO file at dstPath that wraps the PNG payload verbatim in a
+// single-entry ICONDIR. The file layout is:
+//
+//	ICONDIR (6 bytes)            — reserved=0, type=1, count=1
+//	ICONDIRENTRY (16 bytes)      — width, height, ..., size, offset=22
+//	[PNG payload]                — copied byte-for-byte from srcPath
+//
+// Width / height are uint8 fields; 0 represents 256 per the ICO spec.
+// PNG-in-ICO has been supported since Windows Vista so the format is
+// compatible with every GWiM target.
+func pngToICO(srcPath, dstPath string) error {
+	pngBytes, err := os.ReadFile(srcPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", srcPath, err)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(pngBytes))
+	if err != nil {
+		return fmt.Errorf("decode %s as PNG: %w", srcPath, err)
+	}
+
+	const dirHeaderSize = 6
+	const dirEntrySize = 16
+	dataOffset := dirHeaderSize + dirEntrySize
+
+	var out bytes.Buffer
+	binary.Write(&out, binary.LittleEndian, uint16(0)) // reserved
+	binary.Write(&out, binary.LittleEndian, uint16(1)) // type = 1 (icon)
+	binary.Write(&out, binary.LittleEndian, uint16(1)) // count = 1
+
+	w := byte(cfg.Width)
+	h := byte(cfg.Height)
+	if cfg.Width >= 256 {
+		w = 0
+	}
+	if cfg.Height >= 256 {
+		h = 0
+	}
+	out.WriteByte(w)
+	out.WriteByte(h)
+	out.WriteByte(0) // color count (0 for 32bpp)
+	out.WriteByte(0) // reserved
+	binary.Write(&out, binary.LittleEndian, uint16(1))               // color planes
+	binary.Write(&out, binary.LittleEndian, uint16(32))              // bits per pixel
+	binary.Write(&out, binary.LittleEndian, uint32(len(pngBytes)))   // bytes in payload
+	binary.Write(&out, binary.LittleEndian, uint32(dataOffset))      // payload offset
+
+	out.Write(pngBytes)
+	return os.WriteFile(dstPath, out.Bytes(), 0o644)
 }

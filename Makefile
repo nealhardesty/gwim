@@ -12,6 +12,7 @@
 # ---------------------------------------------------------------------------
 
 BINARY        := gwim
+BINARY_WIN    := gwim.exe
 PKG           := github.com/nealhardesty/gwim
 # Main package lives at the module root so that
 #   go install github.com/nealhardesty/gwim@latest
@@ -61,25 +62,46 @@ help: ## Show this help message
 # Build / run
 # ---------------------------------------------------------------------------
 
-# Embedded menu-bar PNGs consumed by //go:embed in internal/icon. These
-# are committed to git so that `go install github.com/nealhardesty/gwim@latest`
+# Embedded menu-bar / tray icons consumed by //go:embed in internal/icon.
+# These are committed to git so that `go install github.com/nealhardesty/gwim@latest`
 # works directly from the Go module proxy without needing `make icons`
-# first. The auto-regen rule below keeps them in sync with
-# scripts/gen-icon/main.go: if a developer changes the drawing code, the
-# PNGs get rewritten on the next build and show up as a working-tree
-# diff so they get committed alongside the source change.
-EMBED_ICONS := internal/icon/assets/icon-active.png internal/icon/assets/icon-suspended.png
+# first.
+#
+# The PNGs are HAND-DRAWN source assets — the build never regenerates
+# them. The ICOs are derived from the PNGs (single-entry PNG-in-ICO
+# containers); changing a PNG triggers an ICO refresh on the next
+# build, surfacing the result as a working-tree diff so the updated
+# ICO gets committed alongside the source change.
+ICON_PNG_SOURCES := \
+	internal/icon/assets/icon-active.png \
+	internal/icon/assets/icon-suspended.png
 
-$(EMBED_ICONS): scripts/gen-icon/main.go
+ICON_ICO_DERIVED := \
+	internal/icon/assets/icon-active.ico \
+	internal/icon/assets/icon-suspended.ico
+
+EMBED_ICONS := $(ICON_PNG_SOURCES) $(ICON_ICO_DERIVED)
+
+$(ICON_ICO_DERIVED): $(ICON_PNG_SOURCES) scripts/gen-icon/main.go
 	@$(GO) run ./scripts/gen-icon
 
 .PHONY: build
-build: $(BUILD_DIR)/$(BINARY) ## Compile the gwim binary into ./dist
+build: $(BUILD_DIR)/$(BINARY) ## Compile the gwim binary into ./dist (host platform)
 
 $(BUILD_DIR)/$(BINARY): $(shell find . \( -name '*.go' -o -name '*.m' \) -not -path './$(BUILD_DIR)/*' -not -path './scripts/*') $(VERSION_FILE) $(EMBED_ICONS)
 	@mkdir -p $(BUILD_DIR)
 	@echo "==> Building $(BINARY) $(VERSION)"
 	$(GO) build $(BUILD_FLAGS) -o $@ $(CMD)
+
+# Cross-compile a Windows .exe from any host. CGO is unused in the Windows
+# port (pure syscall.LazyDLL bindings) so the cross-build works without a
+# MinGW toolchain. Native Windows users can also run `make build` and get
+# `gwim.exe` because Go appends the `.exe` suffix automatically.
+.PHONY: build-windows
+build-windows: $(EMBED_ICONS) ## Cross-compile a Windows binary into ./dist/gwim.exe
+	@mkdir -p $(BUILD_DIR)
+	@echo "==> Cross-building $(BINARY_WIN) $(VERSION)"
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o $(BUILD_DIR)/$(BINARY_WIN) $(CMD)
 
 .PHONY: run
 run: build ## Build then launch the binary in the foreground (logs to stdout)
@@ -124,7 +146,7 @@ check: fmt vet test ## Run fmt, vet, and tests — pre-commit gate
 # ---------------------------------------------------------------------------
 
 .PHONY: icons
-icons: ## Regenerate menu-bar PNGs and the multi-resolution iconset
+icons: ## Regenerate tray ICOs (from hand-drawn PNGs) and the .icns iconset
 	$(GO) run ./scripts/gen-icon
 
 # Mark the iconset directory as produced by `icons` so target dependencies

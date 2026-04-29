@@ -28,7 +28,10 @@ type ToggleHotkey struct {
 	Key       string
 }
 
-// Format renders the toggle accelerator using macOS glyph shorthand.
+// Format renders the toggle accelerator in the host platform's native
+// notation: macOS glyph shorthand `⌃⌥X` on darwin, Windows text
+// `Ctrl+Alt+X` on Windows. The actual rendering lives in
+// shortcuts_format_{darwin,windows,other}.go.
 func (h *ToggleHotkey) Format() string {
 	if h == nil {
 		return ""
@@ -185,7 +188,9 @@ func DefaultShortcuts() []Shortcut {
 }
 
 // PrimaryShortcutFor returns the first shortcut bound to the given action,
-// formatted as a human-readable accelerator string (e.g. "⌃⌥H").
+// formatted as a human-readable accelerator string in the host platform's
+// native style (macOS glyphs `⌃⌥H`, Windows text `Ctrl+Alt+H`).
+//
 // Returns "" when no shortcut is bound.
 func PrimaryShortcutFor(actionID string, shortcuts []Shortcut) string {
 	for _, s := range shortcuts {
@@ -196,56 +201,8 @@ func PrimaryShortcutFor(actionID string, shortcuts []Shortcut) string {
 	return ""
 }
 
-// formatShortcut renders a Shortcut using the standard macOS glyph
-// shorthand (⌃ ⌥ ⇧ ⌘) so the tray menu reads naturally.
-func formatShortcut(s Shortcut) string {
-	out := ""
-	for _, m := range s.Modifiers {
-		switch m {
-		case "ctrl", "control":
-			out += "⌃"
-		case "alt", "option", "opt":
-			out += "⌥"
-		case "shift":
-			out += "⇧"
-		case "cmd", "command", "win", "meta":
-			out += "⌘"
-		}
-	}
-	return out + keyDisplay(s.Key)
-}
-
-// keyDisplay returns the human-friendly label for a key name.
-func keyDisplay(k string) string {
-	switch k {
-	case "left":
-		return "←"
-	case "right":
-		return "→"
-	case "up":
-		return "↑"
-	case "down":
-		return "↓"
-	case "return":
-		return "↩"
-	case "enter":
-		return "⌅"
-	case "escape", "esc":
-		return "⎋"
-	case "tab":
-		return "⇥"
-	case "space":
-		return "Space"
-	case "delete":
-		return "⌫"
-	}
-	if len(k) == 1 {
-		// Letter / digit / punctuation – upper-case for readability.
-		c := k[0]
-		if c >= 'a' && c <= 'z' {
-			c -= 'a' - 'A'
-		}
-		return string(c)
-	}
-	return k
-}
+// formatShortcut and keyDisplay live in platform-tagged files
+// (shortcuts_format_{darwin,windows,other}.go) so the tray menu uses
+// the conventions native to the host: macOS users see the standard
+// menu-bar glyph shorthand `⌃⌥⇧⌘` while Windows users see the
+// Microsoft-standard `Ctrl+Alt+Shift+Win+` text equivalent.
