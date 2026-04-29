@@ -8,11 +8,13 @@
 //     each item is clickable and triggers Engine.Execute, satisfying the
 //     PRD §3.2 requirement that menu items act as remote-control buttons.
 //   - A footer showing the foreground app and the auto-suspension reason.
+//   - Optional Open at Login (platform supplies hooks on macOS).
 //   - Quit.
 package ui
 
 import (
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/getlantern/systray"
@@ -20,6 +22,14 @@ import (
 	"github.com/nealhardesty/gwim/internal/engine"
 	"github.com/nealhardesty/gwim/internal/icon"
 )
+
+// LaunchAtLoginHooks lets a platform package drive the Open at Login menu
+// item. If LaunchAtLogin is nil or Supported returns false, no item is added.
+type LaunchAtLoginHooks struct {
+	Supported func() bool
+	IsOn      func() bool
+	Set       func(enable bool) error
+}
 
 // Tray is the menu-bar controller. It owns the systray menu items and
 // reacts to engine state changes.
@@ -33,12 +43,17 @@ type Tray struct {
 	// `open x-apple.systempreferences:...` shell shortcut.
 	OpenAccessibilitySettings func()
 
+	// LaunchAtLogin, if set and Supported() is true, adds a checkable
+	// "Open at Login" row (macOS 13+ from GWiM.app).
+	LaunchAtLogin *LaunchAtLoginHooks
+
 	// menu items kept around so we can update labels / checkmarks.
 	mItemSuspend *systray.MenuItem
 	mItemStatus  *systray.MenuItem
 	mItemActive  *systray.MenuItem
 	mItemAccess  *systray.MenuItem
 	mItemLastErr *systray.MenuItem
+	mItemLaunch  *systray.MenuItem
 
 	// shortcut menu items mapped by action ID for click dispatch.
 	mu             sync.Mutex
@@ -96,6 +111,14 @@ func (t *Tray) build() {
 	t.mItemLastErr.Disable()
 	t.mItemLastErr.Hide()
 	go t.handleAccessClick()
+
+	if t.LaunchAtLogin != nil && t.LaunchAtLogin.Supported != nil && t.LaunchAtLogin.Supported() &&
+		t.LaunchAtLogin.IsOn != nil && t.LaunchAtLogin.Set != nil {
+		on := t.LaunchAtLogin.IsOn()
+		t.mItemLaunch = systray.AddMenuItemCheckbox("Open at Login",
+			"Launch GWiM when you log in (macOS 13+, from GWiM.app)", on)
+		go t.handleLaunchAtLogin()
+	}
 
 	systray.AddSeparator()
 
@@ -219,6 +242,36 @@ func (t *Tray) handleAccessClick() {
 			t.eng.RefreshAccessibility()
 			if t.OpenAccessibilitySettings != nil {
 				t.OpenAccessibilitySettings()
+			}
+		}
+	}
+}
+
+func (t *Tray) handleLaunchAtLogin() {
+	for {
+		select {
+		case <-t.stopShortcutCh:
+			return
+		case <-t.mItemLaunch.ClickedCh:
+			if t.LaunchAtLogin == nil || t.LaunchAtLogin.IsOn == nil || t.LaunchAtLogin.Set == nil {
+				continue
+			}
+			next := !t.LaunchAtLogin.IsOn()
+			if err := t.LaunchAtLogin.Set(next); err != nil {
+				log.Printf("open at login: %v", err)
+				t.mItemLastErr.SetTitle(fmt.Sprintf("Open at login: %v", err))
+				t.mItemLastErr.Show()
+				if t.LaunchAtLogin.IsOn() {
+					t.mItemLaunch.Check()
+				} else {
+					t.mItemLaunch.Uncheck()
+				}
+				continue
+			}
+			if next {
+				t.mItemLaunch.Check()
+			} else {
+				t.mItemLaunch.Uncheck()
 			}
 		}
 	}

@@ -10,13 +10,14 @@ package macos
 //   - `-fobjc-arc` enables Automatic Reference Counting so Objective-C
 //     objects are released without manual `[obj release]` calls.
 //   - The linker pulls in Cocoa (NS*), ApplicationServices (AXUIElement),
-//     and Carbon (RegisterEventHotKey, GetEventParameter).
+//     Carbon (RegisterEventHotKey, GetEventParameter), and ServiceManagement
+//     (SMAppService login-item registration).
 //
 // Cgo merges flags from every file in the package, so declaring them in
 // one place keeps the per-feature files focused on their preamble code.
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc -Wno-deprecated-declarations
-#cgo LDFLAGS: -framework Cocoa -framework ApplicationServices -framework Carbon
+#cgo LDFLAGS: -framework Cocoa -framework ApplicationServices -framework Carbon -framework ServiceManagement
 */
 import "C"

@@ -35,6 +35,11 @@ remote-desktop clients automatically.
     **Accessibility grant state**.
   - Clickable **Accessibility** status row opens
     **System Settings → Privacy & Security → Accessibility** directly.
+  - **Open at Login** (checkable): when you run from **GWiM.app** on
+    **macOS 13 or later**, toggles registration with the system so GWiM
+    starts at login (same mechanism as **System Settings → General →
+    Login Items**). The item is omitted for a bare `gwim` binary or on
+    older macOS.
   - Hidden **Last action error** row appears automatically if any action
     fails (for example, if macOS revokes Accessibility permission).
 - **Single binary, ~3 MB**, no runtime dependencies beyond the macOS

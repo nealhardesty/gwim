@@ -6,6 +6,7 @@
 //   - ApplicationServices / Accessibility (AXUIElement) – window manipulation.
 //   - AppKit (NSWorkspace, NSScreen)                    – active-app & screen geometry.
 //   - Carbon (RegisterEventHotKey)                       – global hotkey hooks.
+//   - ServiceManagement (SMAppService)                  – Open at Login (macOS 13+).
 //
 // All exported constructors return concrete types that satisfy the wm.*
 // interfaces. Platform selection is performed at compile time via build

@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Open at Login** menu-bar checkbox (macOS 13+, from `GWiM.app` only)
+  using `SMAppService` to register or unregister the main app as a login
+  item. Failures surface in the tray’s “Last action” row.
+
 - **`make release`** — builds the `.app` bundle, zips it with `ditto` to
   `dist/GWiM-<version>.zip`, then uses `gh` to create the GitHub release
   `v<version>` (with `--generate-notes`) or, if the release already exists,

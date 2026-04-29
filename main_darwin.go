@@ -75,6 +75,11 @@ func startApp() error {
 	tray := ui.New(eng, Version, toggle.Format())
 	// Wire the "click to fix" affordance on the AX status row.
 	tray.OpenAccessibilitySettings = openAccessibilityPane
+	tray.LaunchAtLogin = &ui.LaunchAtLoginHooks{
+		Supported: macos.LaunchAtLoginSupported,
+		IsOn:      macos.LaunchAtLoginEnabled,
+		Set:       macos.SetLaunchAtLogin,
+	}
 	tray.Run(func() {
 		if err := eng.Run(ctx); err != nil {
 			log.Printf("engine run: %v", err)
