@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`go install github.com/nealhardesty/gwim@latest` now works.** Two
+  obstacles were removed:
+  1. **Main package moved to the module root.** `cmd/gwim/main.go`,
+     `main_darwin.go`, `main_windows.go`, and `version.go` were
+     relocated to `./` and the now-empty `cmd/gwim/` directory was
+     deleted. The `Makefile` was updated (`CMD := .`,
+     `VERSION_FILE := version.go`) so all existing targets keep
+     working unchanged.
+  2. **Embedded icon PNGs are now committed to git.** The two ~200-byte
+     menu-bar PNGs in `internal/icon/assets/` (consumed by `//go:embed`
+     in `internal/icon/icon.go`) were previously gitignored and only
+     produced by `make icons`, which broke any `go install` from the
+     module proxy with `pattern assets/icon-active.png: no matching
+     files found`. They are now tracked. The Makefile's auto-regen
+     rule (`$(EMBED_ICONS): scripts/gen-icon/main.go`) is preserved
+     so changes to the drawing code regenerate the PNGs on the next
+     build, surfacing them as a working-tree diff to be committed
+     alongside the source change.
+- `make clean` no longer deletes the embedded PNGs (they are now
+  tracked source assets).
+- README.md gained an "Option 1: `go install`" section explaining the
+  new install path and its trade-off vs. the recommended
+  `make app` + `make install` flow (which still pins the codesign
+  identity for stable macOS Accessibility permission).
+
 ### Fixed
 
 - **Hotkeys silently stopped working after rebuilds.** Root cause was

@@ -71,11 +71,30 @@ source of truth for both the hotkey registrar and the tray menu.
 
 ## Installation
 
+### Option 1: `go install` (binary only)
+
+If you have a Go toolchain, you can install the raw binary into `$GOBIN`
+directly from the module proxy:
+
+```bash
+go install github.com/nealhardesty/gwim@latest
+gwim                      # launch in the foreground
+```
+
+This produces a working `gwim` binary but **does not** create the
+`GWiM.app` bundle. Without the bundle the app still runs and registers
+hotkeys, but every rebuild will invalidate macOS Accessibility
+permission (TCC keys it on the codesign identity, which only the signed
+bundle pins). Use this path for quick experimentation; use Option 2 for
+a real install.
+
+### Option 2: `make app` + `make install` (recommended on macOS)
+
 ```bash
 git clone https://github.com/nealhardesty/gwim.git
 cd gwim
-make app                  # build dist/GWiM.app
-make install              # copy to /Applications (sudo if needed)
+make app                  # build dist/GWiM.app (ad-hoc signed)
+make install              # copy to /Applications
 open -a GWiM              # launch
 ```
 
@@ -110,14 +129,16 @@ make icons                # regenerate menu-bar PNGs and .iconset
 ### Project layout
 
 ```
-cmd/gwim/                 # entrypoint + per-OS bootstrap (main_darwin.go)
+main.go, main_darwin.go,  # entrypoint + per-OS bootstrap (lives at module root
+main_windows.go,          # so `go install github.com/nealhardesty/gwim@latest` works)
+version.go
 internal/wm/              # platform-agnostic interfaces (Window, WindowManager, HotkeyManager)
 internal/platform/macos/  # cgo bridge: AXUIElement, NSWorkspace, Carbon hotkeys
 internal/platform/windows/# (scaffold for Win32 port, see DESIGN.md §4.4)
 internal/engine/          # action table, layout math, suspension dispatcher
 internal/ui/              # systray menu UI
-internal/icon/            # embedded menu-bar PNGs
-scripts/gen-icon/         # generates the embedded icons + .iconset
+internal/icon/            # embedded menu-bar PNGs (committed; required by //go:embed)
+scripts/gen-icon/         # regenerates the embedded icons + .iconset (run via `make icons`)
 assets/Info.plist.template# .app bundle plist (LSUIElement=YES)
 ```
 
@@ -150,7 +171,7 @@ assets/Info.plist.template# .app bundle plist (LSUIElement=YES)
 
 ## Versioning & releases
 
-The current version lives in [`cmd/gwim/version.go`](cmd/gwim/version.go).
+The current version lives in [`version.go`](version.go).
 
 Per the project conventions (see [`AGENTS.md`](AGENTS.md)) all commits
 must go through `make push`, which:

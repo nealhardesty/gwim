@@ -12,5 +12,5 @@
 //
 // No source files exist in this package yet — when the port begins, add
 // `//go:build windows` files implementing wm.WindowManager and
-// wm.HotkeyManager and wire them in cmd/gwim/main_windows.go.
+// wm.HotkeyManager and wire them in main_windows.go at the module root.
 package windows
