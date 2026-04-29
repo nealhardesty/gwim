@@ -6,6 +6,70 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hotkeys silently stopped working after rebuilds.** Root cause was
+  macOS TCC keying Accessibility permission on the binary's codesign
+  identifier; a bare `go build` produced binaries with `Identifier=a.out`
+  and an unbound Info.plist, so every rebuild silently invalidated the
+  user's permission grant — System Settings still showed it as granted,
+  but TCC no longer honoured it for the new binary. Hotkeys fired, AX
+  calls returned "denied", and the failure was logged to launchd where
+  no one would see it. Fixed in three layers:
+  1. `make codesign` ad-hoc signs the bundle with
+     `CFBundleIdentifier`-derived stable identity and a sealed
+     Info.plist; baked into `make app` so every build is signed.
+  2. `make install` now stops any running instance and prints clear
+     re-grant instructions for the one-time TCC reset.
+  3. The tray now shows a live "Accessibility: granted ✓ / DENIED" row
+     (clickable — opens System Settings → Privacy & Security →
+     Accessibility directly), plus a hidden "Last action: …" row that
+     appears when the engine catches an action error. The engine
+     re-checks AX after every failed action so the row flips the
+     instant TCC revokes the grant.
+
+### Added
+
+- **`Engine.Config.AccessibilityCheck`** — optional non-prompting
+  callback the engine polls every tick to keep the AX state honest.
+  Exposed via `SuspensionState.AccessibilityGranted` and
+  `SuspensionState.AccessibilityChecked`.
+- **`Engine.RefreshAccessibility()`** — manual re-check, called by the
+  tray's AX-row click handler so toggling permission in System Settings
+  is reflected immediately rather than after the next poll tick.
+- **`SuspensionState.LastActionError`** — most recent failed action
+  message, surfaced by the tray when non-empty.
+- `make codesign` Makefile target plus `make install` lifecycle improvements.
+- **`Ctrl+Alt+X` global toggle** for GWiM enable/disable. The hotkey is
+  registered as **persistent** so it stays bound even while regular
+  shortcuts are suspended (e.g. during a screen-sharing session). The
+  same behaviour is bound to the menu-bar Suspend/Activate item.
+- **User-mode override semantics**: the toggle now beats automatic
+  suspension. New `UserMode` enum (`Auto` / `ForceActive` /
+  `ForceSuspended`) on the engine; toggling while auto-suspended forces
+  GWiM on, satisfying the use case of "I'm in screen sharing but I want
+  to rearrange local windows".
+- New `wm.HotkeyManager.RegisterPersistent` interface method, with
+  matching macOS implementation that simply skips persistent bindings
+  during `SetSuspended`.
+- Tray status menu now distinguishes `Active`, `Active (forced on)`,
+  `Auto-suspended (blocklist)`, and `Suspended (forced off)`.
+- Tray Suspend/Activate label now displays its accelerator (`⌃⌥X`).
+
+### Changed
+
+- `Engine.SetUserSuspended(bool)` now sets `UserModeForceSuspended` /
+  `UserModeForceActive` (legacy boolean → tri-state mapping). Existing
+  `Snapshot().UserSuspended` semantics preserved as `UserMode == ForceSuspended`.
+- Tray click on Suspend/Activate now goes through `Engine.ToggleUserSuspended()`
+  for parity with the hotkey path.
+
+### Tests
+
+- New `TestToggle_FlipsActiveAndSuspended`,
+  `TestToggle_OverridesAutoSuspension`,
+  `TestPersistentHotkey_FiresWhileSuspended`, `TestDefaultToggleHotkey`.
+
 ## [0.1.0] - 2026-04-28
 
 Initial implementation of the macOS port. Establishes the full

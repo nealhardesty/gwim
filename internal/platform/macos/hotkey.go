@@ -86,13 +86,18 @@ type macHotkeyManager struct {
 //
 // liveRef is the live C-side EventHotKeyRef when the hotkey is active, or
 // 0 when it has been unregistered (e.g. while the manager is suspended).
+//
+// persistent bindings are immune to SetSuspended — they remain registered
+// with the OS even while regular hotkeys are temporarily disabled, so
+// control-channel commands (e.g. "toggle GWiM on/off") always fire.
 type hotkeyBinding struct {
-	id        uint32
-	keycode   uint32
-	modifiers uint32
-	handler   wm.HotkeyHandler
-	liveRef   uintptr
-	descLabel string // for logging/debug only
+	id         uint32
+	keycode    uint32
+	modifiers  uint32
+	handler    wm.HotkeyHandler
+	liveRef    uintptr
+	persistent bool
+	descLabel  string // for logging/debug only
 }
 
 // NewHotkeyManager constructs a macOS-backed HotkeyManager.
@@ -105,6 +110,19 @@ func NewHotkeyManager() wm.HotkeyManager {
 // Start (once the event handler is installed) or immediately if Start has
 // already been called.
 func (m *macHotkeyManager) Register(modifiers []string, key string, handler wm.HotkeyHandler) error {
+	return m.register(modifiers, key, handler, false)
+}
+
+// RegisterPersistent registers a hotkey that survives SetSuspended. See
+// the wm.HotkeyManager interface for the design rationale.
+func (m *macHotkeyManager) RegisterPersistent(modifiers []string, key string, handler wm.HotkeyHandler) error {
+	return m.register(modifiers, key, handler, true)
+}
+
+// register is the shared implementation behind Register and
+// RegisterPersistent. The persistent flag controls whether SetSuspended
+// affects this binding.
+func (m *macHotkeyManager) register(modifiers []string, key string, handler wm.HotkeyHandler, persistent bool) error {
 	if handler == nil {
 		return fmt.Errorf("hotkey: nil handler for %v + %s", modifiers, key)
 	}
@@ -121,15 +139,20 @@ func (m *macHotkeyManager) Register(modifiers []string, key string, handler wm.H
 	defer m.mu.Unlock()
 	m.nextID++
 	b := &hotkeyBinding{
-		id:        m.nextID,
-		keycode:   keycode,
-		modifiers: mask,
-		handler:   handler,
-		descLabel: fmt.Sprintf("%v+%s", modifiers, key),
+		id:         m.nextID,
+		keycode:    keycode,
+		modifiers:  mask,
+		handler:    handler,
+		persistent: persistent,
+		descLabel:  fmt.Sprintf("%v+%s", modifiers, key),
 	}
 	m.bindings = append(m.bindings, b)
 
-	if m.started && !m.suspended {
+	// Persistent hotkeys register immediately when Start has run, even
+	// while regular hotkeys are suspended. Regular hotkeys honour the
+	// suspension flag.
+	shouldActivate := m.started && (b.persistent || !m.suspended)
+	if shouldActivate {
 		if ref := C.gwim_register_hotkey(C.uint(b.id), C.uint(b.keycode), C.uint(b.modifiers)); ref != 0 {
 			b.liveRef = uintptr(ref)
 		} else {
@@ -142,6 +165,9 @@ func (m *macHotkeyManager) Register(modifiers []string, key string, handler wm.H
 
 // Start installs the shared Carbon event handler and registers every
 // previously stored binding. Safe to call multiple times.
+//
+// While suspended, only persistent bindings get registered — regular
+// bindings stay dormant until the manager is unsuspended.
 func (m *macHotkeyManager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -152,11 +178,11 @@ func (m *macHotkeyManager) Start() error {
 		}
 		m.started = true
 	}
-	if m.suspended {
-		return nil
-	}
 	for _, b := range m.bindings {
 		if b.liveRef != 0 {
+			continue
+		}
+		if m.suspended && !b.persistent {
 			continue
 		}
 		ref := C.gwim_register_hotkey(C.uint(b.id), C.uint(b.keycode), C.uint(b.modifiers))
@@ -182,8 +208,10 @@ func (m *macHotkeyManager) Stop() {
 	}
 }
 
-// SetSuspended toggles the live registration of all hotkeys. While
-// suspended, key combinations propagate to the foreground app unhandled.
+// SetSuspended toggles the live registration of regular hotkeys.
+// Persistent hotkeys (registered via RegisterPersistent) are immune and
+// remain bound at all times. While suspended, regular key combinations
+// propagate to the foreground app unhandled.
 func (m *macHotkeyManager) SetSuspended(s bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -196,6 +224,9 @@ func (m *macHotkeyManager) SetSuspended(s bool) {
 	}
 	if s {
 		for _, b := range m.bindings {
+			if b.persistent {
+				continue
+			}
 			if b.liveRef != 0 {
 				C.gwim_unregister_hotkey(C.uintptr_t(b.liveRef))
 				b.liveRef = 0

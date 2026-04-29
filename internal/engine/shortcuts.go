@@ -18,6 +18,34 @@ type Shortcut struct {
 	Key string
 }
 
+// ToggleHotkey is the persistent hotkey bound to ToggleUserSuspended.
+//
+// "Persistent" means the OS keeps it registered even while regular
+// shortcuts are unregistered (during a screen-sharing session etc.), so
+// the user can always reclaim or release control of GWiM. When this
+// hotkey fires, the engine flips between UserModeForceActive and
+// UserModeForceSuspended, overriding the automatic blocklist signal.
+type ToggleHotkey struct {
+	Modifiers []string
+	Key       string
+}
+
+// Format renders the toggle accelerator using macOS glyph shorthand.
+func (h *ToggleHotkey) Format() string {
+	if h == nil {
+		return ""
+	}
+	return formatShortcut(Shortcut{Modifiers: h.Modifiers, Key: h.Key})
+}
+
+// DefaultToggleHotkey returns the default Ctrl+Alt+X mapping.
+func DefaultToggleHotkey() *ToggleHotkey {
+	return &ToggleHotkey{
+		Modifiers: []string{"ctrl", "alt"},
+		Key:       "x",
+	}
+}
+
 // Modifier groups for readability. The hotkey scheme below mirrors the
 // legacy Hammerspoon configuration described in DESIGN.md §3.
 var (

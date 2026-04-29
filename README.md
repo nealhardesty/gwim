@@ -21,6 +21,11 @@ remote-desktop clients automatically.
   (Microsoft Remote Desktop, Apple Screen Sharing, RealVNC, TigerVNC,
   Windows App), GWiM physically unregisters its hotkeys so the keystrokes
   reach the remote machine.
+- **Always-available toggle** (`Ctrl+Alt+X`): a persistent hotkey that
+  flips GWiM on/off and can **override auto-suspension**, so you can
+  enable GWiM mid-screen-sharing if you need to rearrange local windows
+  without dismissing the remote session. The same toggle is on the menu
+  bar.
 - **Menu-bar UI**:
   - One-click **Suspend / Activate** toggle.
   - **Shortcuts submenu** listing every action with its keyboard accelerator.
@@ -48,6 +53,7 @@ All snap shortcuts use **`⌃⌥`** (Ctrl+Alt). Move uses **`⌃⌥⇧`**, resiz
 | Bottom strip (left/right)| `N` / `,`           |
 | Maximize (frame)         | `↩` (Return)        |
 | Native fullscreen toggle | `F`                 |
+| **Toggle GWiM on/off**   | **`X`** *(persistent — works even during screen sharing)* |
 
 | Verb                     | Modifiers           | Keys                  |
 |--------------------------|---------------------|-----------------------|
@@ -103,10 +109,16 @@ assets/Info.plist.template# .app bundle plist (LSUIElement=YES)
 - **Interface-first**: `internal/engine` and `internal/ui` know nothing
   about macOS. The Windows port plugs into the same interfaces in
   `internal/platform/windows/`.
-- **Suspension is a state machine** with two axes (user toggle + automatic
-  blocklist match). When suspended, hotkeys are physically unregistered
-  so the OS dispatches them to the foreground app — required for
-  Microsoft Remote Desktop, Screen Sharing, etc.
+- **Suspension is a state machine** with two inputs:
+  - `UserMode` (Auto / ForceActive / ForceSuspended) — explicit user
+    override that always wins when set to a Force value.
+  - `autoSuspended` — driven by a 500ms blocklist poller.
+
+  When the engine is effectively suspended, regular hotkeys are
+  physically unregistered so the OS dispatches them to the foreground
+  app. The Ctrl+Alt+X toggle is registered as a **persistent** hotkey
+  (`HotkeyManager.RegisterPersistent`) so it stays bound at all times
+  and gives the user a way back in.
 - **Tray clicks bypass suspension** because they are an explicit user
   request. Hotkeys observe suspension because they are ambiguous intent.
 - **Single-source shortcut table**: `engine.DefaultShortcuts()` powers

@@ -73,11 +73,25 @@ type HotkeyManager interface {
 	// "ctrl", "alt" (or "option"), "shift", "cmd" (or "win").
 	// Key names follow the same convention used in shortcuts.go (e.g.
 	// "h", "1", "left", "return").
+	//
+	// Hotkeys registered via Register are SUSPENDABLE: SetSuspended(true)
+	// physically unregisters them with the OS so the keystroke flows to
+	// the foreground app.
 	Register(modifiers []string, key string, handler HotkeyHandler) error
 
-	// SetSuspended enables (false) or disables (true) hotkey dispatch.
-	// When suspended, implementations should ensure the OS does not
-	// consume the keystroke so it can reach the foreground application.
+	// RegisterPersistent registers a hotkey that survives suspension.
+	//
+	// Persistent hotkeys are NEVER unregistered by SetSuspended, so they
+	// continue to fire even while a remote-desktop / blocklisted app is
+	// foreground. Reserved for control-channel commands like the
+	// "toggle GWiM on/off" hotkey, where the user must always be able
+	// to drive GWiM regardless of suspension state.
+	RegisterPersistent(modifiers []string, key string, handler HotkeyHandler) error
+
+	// SetSuspended enables (false) or disables (true) hotkey dispatch
+	// for hotkeys registered via Register. Persistent hotkeys are
+	// unaffected. When suspended, implementations should ensure the OS
+	// does not consume the keystroke so it can reach the foreground app.
 	SetSuspended(bool)
 
 	// Suspended reports the current suspension state.

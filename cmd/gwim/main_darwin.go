@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"syscall"
@@ -30,21 +31,30 @@ import (
 func startApp() error {
 	runtime.LockOSThread()
 
+	// Prompt once at startup. Subsequent re-checks (every PollInterval
+	// and after action errors) are silent — see Config.AccessibilityCheck
+	// below. The tray surfaces the live state visibly.
 	if !macos.RequestAccessibilityPermission(true) {
 		log.Printf("Accessibility permission not yet granted. " +
 			"GWiM will keep running; grant it in " +
-			"System Settings → Privacy & Security → Accessibility, then restart.")
+			"System Settings → Privacy & Security → Accessibility. " +
+			"The menu-bar status will update automatically once granted.")
 	}
 
 	wmgr := macos.NewWindowManager()
 	hkmgr := macos.NewHotkeyManager()
 
+	toggle := engine.DefaultToggleHotkey()
 	eng, err := engine.New(engine.Config{
 		WindowManager: wmgr,
 		HotkeyManager: hkmgr,
 		Actions:       engine.DefaultActions(),
 		Shortcuts:     engine.DefaultShortcuts(),
+		ToggleHotkey:  toggle,
 		Blocklist:     engine.DefaultBlocklist(),
+		// NON-prompting check — the engine polls this every tick to keep
+		// the tray's "Accessibility: granted/denied" row honest.
+		AccessibilityCheck: func() bool { return macos.RequestAccessibilityPermission(false) },
 	})
 	if err != nil {
 		return fmt.Errorf("engine init: %w", err)
@@ -62,7 +72,9 @@ func startApp() error {
 		eng.Stop()
 	}()
 
-	tray := ui.New(eng, Version)
+	tray := ui.New(eng, Version, toggle.Format())
+	// Wire the "click to fix" affordance on the AX status row.
+	tray.OpenAccessibilitySettings = openAccessibilityPane
 	tray.Run(func() {
 		if err := eng.Run(ctx); err != nil {
 			log.Printf("engine run: %v", err)
@@ -72,4 +84,14 @@ func startApp() error {
 		eng.Stop()
 	})
 	return nil
+}
+
+// openAccessibilityPane jumps directly to System Settings →
+// Privacy & Security → Accessibility. Uses the well-known x-apple
+// preferences URL scheme — works on macOS 10.10 and later.
+func openAccessibilityPane() {
+	const url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+	if err := exec.Command("open", url).Start(); err != nil {
+		log.Printf("open accessibility settings: %v", err)
+	}
 }

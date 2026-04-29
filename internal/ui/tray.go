@@ -24,13 +24,21 @@ import (
 // Tray is the menu-bar controller. It owns the systray menu items and
 // reacts to engine state changes.
 type Tray struct {
-	eng     *engine.Engine
-	version string
+	eng         *engine.Engine
+	version     string
+	toggleAccel string // pre-formatted glyph string (e.g. "⌃⌥X"), "" if none
+
+	// OpenAccessibilitySettings, if set, is invoked when the user clicks
+	// the AX status item. Optional — main packages on macOS supply the
+	// `open x-apple.systempreferences:...` shell shortcut.
+	OpenAccessibilitySettings func()
 
 	// menu items kept around so we can update labels / checkmarks.
 	mItemSuspend *systray.MenuItem
 	mItemStatus  *systray.MenuItem
 	mItemActive  *systray.MenuItem
+	mItemAccess  *systray.MenuItem
+	mItemLastErr *systray.MenuItem
 
 	// shortcut menu items mapped by action ID for click dispatch.
 	mu             sync.Mutex
@@ -38,11 +46,14 @@ type Tray struct {
 	stopShortcutCh chan struct{}
 }
 
-// New constructs a Tray. The version string is shown in the menu footer.
-func New(eng *engine.Engine, version string) *Tray {
+// New constructs a Tray. The version string is shown in the menu footer;
+// toggleAccel, if non-empty, is appended to the Suspend/Activate label
+// so the user can see the keyboard shortcut.
+func New(eng *engine.Engine, version, toggleAccel string) *Tray {
 	return &Tray{
 		eng:            eng,
 		version:        version,
+		toggleAccel:    toggleAccel,
 		shortcutItems:  make(map[string]*systray.MenuItem),
 		stopShortcutCh: make(chan struct{}),
 	}
@@ -73,11 +84,18 @@ func (t *Tray) build() {
 	systray.SetTitle("") // icon-only; title takes precious menu-bar real estate
 	systray.SetTooltip(fmt.Sprintf("GWiM %s — Keyboard window manager", t.version))
 
-	t.mItemSuspend = systray.AddMenuItem("Suspend GWiM", "Pause / resume hotkey dispatch")
+	t.mItemSuspend = systray.AddMenuItem(t.suspendLabel(true), "Pause / resume hotkey dispatch")
 	t.mItemActive = systray.AddMenuItem("Status: Active", "")
 	t.mItemActive.Disable()
 	t.mItemStatus = systray.AddMenuItem("Foreground: (unknown)", "")
 	t.mItemStatus.Disable()
+	// AX status is clickable — clicking opens System Settings so the
+	// user can fix a denied permission without hunting through menus.
+	t.mItemAccess = systray.AddMenuItem("Accessibility: (checking…)", "Click to open System Settings")
+	t.mItemLastErr = systray.AddMenuItem("Last action: ok", "")
+	t.mItemLastErr.Disable()
+	t.mItemLastErr.Hide()
+	go t.handleAccessClick()
 
 	systray.AddSeparator()
 
@@ -141,15 +159,15 @@ func (t *Tray) buildShortcutsMenu(root *systray.MenuItem) {
 }
 
 // handleSuspendToggle runs in its own goroutine and reacts to clicks on
-// the Suspend menu item.
+// the Suspend menu item. Uses ToggleUserSuspended so the click overrides
+// auto-suspension exactly like the Ctrl+Alt+X hotkey does.
 func (t *Tray) handleSuspendToggle() {
 	for {
 		select {
 		case <-t.stopShortcutCh:
 			return
 		case <-t.mItemSuspend.ClickedCh:
-			cur := t.eng.Snapshot()
-			t.eng.SetUserSuspended(!cur.UserSuspended)
+			t.eng.ToggleUserSuspended()
 		}
 	}
 }
@@ -177,39 +195,99 @@ func (t *Tray) handleShortcutClick(actionID string, item *systray.MenuItem) {
 			return
 		case <-item.ClickedCh:
 			if err := t.eng.Execute(actionID); err != nil {
-				// Surface failures via the status item so the user
-				// notices misbehaving apps without needing the log.
-				t.mItemStatus.SetTitle(fmt.Sprintf("Error: %v", err))
+				// Surface failures via the dedicated last-error row.
+				t.mItemLastErr.SetTitle(fmt.Sprintf("Last action: %v", err))
+				t.mItemLastErr.Show()
+			}
+		}
+	}
+}
+
+// handleAccessClick handles clicks on the Accessibility status item.
+//
+// Each click does two things:
+//  1. Re-runs the engine's AX check so the menu reflects truth even if
+//     the user just toggled the permission in System Settings.
+//  2. If still denied (or first click), invokes the platform-supplied
+//     OpenAccessibilitySettings hook so the user can fix it in one step.
+func (t *Tray) handleAccessClick() {
+	for {
+		select {
+		case <-t.stopShortcutCh:
+			return
+		case <-t.mItemAccess.ClickedCh:
+			t.eng.RefreshAccessibility()
+			if t.OpenAccessibilitySettings != nil {
+				t.OpenAccessibilitySettings()
 			}
 		}
 	}
 }
 
 // refresh updates icon, status text, and toggle label to match state.
+//
+// Status text reflects which axis (user override vs. automatic blocklist)
+// drove the current state, plus the foreground app, so the user can
+// always tell why GWiM did or did not respond to a hotkey.
 func (t *Tray) refresh(s engine.SuspensionState) {
 	if s.Active() {
 		systray.SetIcon(icon.Active())
-		t.mItemSuspend.SetTitle("Suspend GWiM")
-		t.mItemActive.SetTitle("Status: Active")
+		t.mItemSuspend.SetTitle(t.suspendLabel(true))
+		switch s.UserMode {
+		case engine.UserModeForceActive:
+			t.mItemActive.SetTitle("Status: Active (forced on)")
+		default:
+			t.mItemActive.SetTitle("Status: Active")
+		}
 	} else {
 		systray.SetIcon(icon.Suspended())
-		switch {
-		case s.UserSuspended:
-			t.mItemSuspend.SetTitle("Activate GWiM")
-			t.mItemActive.SetTitle("Status: Suspended (manual)")
-		case s.AutoSuspended:
-			t.mItemSuspend.SetTitle("Suspend GWiM")
+		t.mItemSuspend.SetTitle(t.suspendLabel(false))
+		switch s.UserMode {
+		case engine.UserModeForceSuspended:
+			t.mItemActive.SetTitle("Status: Suspended (forced off)")
+		default: // UserModeAuto with AutoSuspended=true
 			t.mItemActive.SetTitle("Status: Auto-suspended (blocklist)")
-		default:
-			t.mItemActive.SetTitle("Status: Suspended")
 		}
 	}
 
-	if s.ActiveAppID == "" {
+	switch {
+	case s.ActiveAppID == "":
 		t.mItemStatus.SetTitle("Foreground: (unknown)")
-	} else if s.ActiveAppBlocked {
+	case s.ActiveAppBlocked:
 		t.mItemStatus.SetTitle(fmt.Sprintf("Foreground: %s [blocked]", s.ActiveAppID))
-	} else {
+	default:
 		t.mItemStatus.SetTitle(fmt.Sprintf("Foreground: %s", s.ActiveAppID))
 	}
+
+	// Accessibility row — the headline diagnostic. Without AX permission
+	// every action silently no-ops; the user's only clue used to be log
+	// output they couldn't see. This row makes it obvious.
+	switch {
+	case !s.AccessibilityChecked:
+		t.mItemAccess.SetTitle("Accessibility: (unknown)")
+	case s.AccessibilityGranted:
+		t.mItemAccess.SetTitle("Accessibility: granted ✓")
+	default:
+		t.mItemAccess.SetTitle("Accessibility: DENIED — click to fix")
+	}
+
+	if s.LastActionError != "" {
+		t.mItemLastErr.SetTitle("Last action: " + s.LastActionError)
+		t.mItemLastErr.Show()
+	} else {
+		t.mItemLastErr.Hide()
+	}
+}
+
+// suspendLabel renders the Suspend/Activate menu label, optionally
+// appending the toggle accelerator (e.g. "Suspend GWiM   ⌃⌥X").
+func (t *Tray) suspendLabel(active bool) string {
+	base := "Suspend GWiM"
+	if !active {
+		base = "Activate GWiM"
+	}
+	if t.toggleAccel == "" {
+		return base
+	}
+	return fmt.Sprintf("%s   %s", base, t.toggleAccel)
 }

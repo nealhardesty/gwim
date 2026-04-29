@@ -48,19 +48,36 @@ func (f *fakeWM) setActiveApp(id string) {
 }
 
 // fakeHK is the in-memory wm.HotkeyManager used in engine tests.
+//
+// It distinguishes regular vs persistent bindings so tests can assert
+// that persistent hotkeys remain dispatchable while suspended (the
+// production macOS implementation does the same by physically leaving
+// persistent bindings registered with Carbon).
 type fakeHK struct {
-	mu        sync.Mutex
-	bindings  map[string]wm.HotkeyHandler
-	suspended bool
-	started   bool
+	mu         sync.Mutex
+	regular    map[string]wm.HotkeyHandler
+	persistent map[string]wm.HotkeyHandler
+	suspended  bool
+	started    bool
 }
 
-func newFakeHK() *fakeHK { return &fakeHK{bindings: map[string]wm.HotkeyHandler{}} }
+func newFakeHK() *fakeHK {
+	return &fakeHK{
+		regular:    map[string]wm.HotkeyHandler{},
+		persistent: map[string]wm.HotkeyHandler{},
+	}
+}
 
 func (h *fakeHK) Register(mods []string, key string, handler wm.HotkeyHandler) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.bindings[key] = handler
+	h.regular[key] = handler
+	return nil
+}
+func (h *fakeHK) RegisterPersistent(mods []string, key string, handler wm.HotkeyHandler) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.persistent[key] = handler
 	return nil
 }
 func (h *fakeHK) Start() error        { h.started = true; return nil }
@@ -68,10 +85,21 @@ func (h *fakeHK) Stop()               { h.started = false }
 func (h *fakeHK) SetSuspended(b bool) { h.mu.Lock(); h.suspended = b; h.mu.Unlock() }
 func (h *fakeHK) Suspended() bool     { h.mu.Lock(); defer h.mu.Unlock(); return h.suspended }
 
-// fire simulates the OS dispatching the registered hotkey.
+// fire simulates the OS dispatching a registered hotkey. Regular hotkeys
+// are skipped while suspended (matching the macOS dynamic-unregister
+// behaviour); persistent hotkeys always fire.
 func (h *fakeHK) fire(key string) {
 	h.mu.Lock()
-	handler := h.bindings[key]
+	if handler, ok := h.persistent[key]; ok {
+		h.mu.Unlock()
+		handler()
+		return
+	}
+	if h.suspended {
+		h.mu.Unlock()
+		return
+	}
+	handler := h.regular[key]
 	h.mu.Unlock()
 	if handler != nil {
 		handler()
@@ -264,6 +292,143 @@ func TestPrimaryShortcutFor(t *testing.T) {
 	}
 	if PrimaryShortcutFor("missing", shortcuts) != "" {
 		t.Fatal("expected empty string for unknown action")
+	}
+}
+
+// TestToggle_FlipsActiveAndSuspended checks the basic two-state cycle
+// of the user-mode toggle from the default Auto state.
+func TestToggle_FlipsActiveAndSuspended(t *testing.T) {
+	win := &fakeWindow{}
+	fwm := &fakeWM{win: win, screen: wm.Rect{W: 1000, H: 800}, activeApp: "com.test.allowed"}
+	fhk := newFakeHK()
+	e := makeEngine(t, fwm, fhk)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+
+	if !e.Snapshot().Active() {
+		t.Fatal("expected active by default")
+	}
+
+	e.ToggleUserSuspended()
+	s := e.Snapshot()
+	if s.UserMode != UserModeForceSuspended || s.Active() {
+		t.Fatalf("toggle should suspend; got mode=%s active=%t", s.UserMode, s.Active())
+	}
+
+	e.ToggleUserSuspended()
+	s = e.Snapshot()
+	if s.UserMode != UserModeForceActive || !s.Active() {
+		t.Fatalf("re-toggle should re-activate; got mode=%s active=%t", s.UserMode, s.Active())
+	}
+}
+
+// TestToggle_OverridesAutoSuspension is the headline behaviour for the
+// new feature: the toggle must be able to FORCE GWiM on while a
+// blocklisted app (screen sharing etc.) is foreground, and a regular
+// hotkey must subsequently fire.
+func TestToggle_OverridesAutoSuspension(t *testing.T) {
+	win := &fakeWindow{frame: wm.Rect{W: 100, H: 100}}
+	fwm := &fakeWM{win: win, screen: wm.Rect{W: 1000, H: 800}, activeApp: "com.test.blocked"}
+	fhk := newFakeHK()
+	e := makeEngine(t, fwm, fhk)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+
+	// Wait for the poller to flip auto-suspended.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && !e.Snapshot().AutoSuspended {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !e.Snapshot().AutoSuspended {
+		t.Fatal("setup: expected auto-suspended before toggle")
+	}
+
+	// The toggle MUST work even when auto-suspended.
+	e.ToggleUserSuspended()
+	s := e.Snapshot()
+	if s.UserMode != UserModeForceActive || !s.Active() {
+		t.Fatalf("toggle should override auto-suspend; got mode=%s active=%t auto=%t",
+			s.UserMode, s.Active(), s.AutoSuspended)
+	}
+
+	fhk.fire("h")
+	if got := atomic.LoadInt32(&win.calls); got != 1 {
+		t.Fatalf("regular hotkey should now dispatch; got %d calls", got)
+	}
+}
+
+// TestPersistentHotkey_FiresWhileSuspended confirms a hotkey registered
+// via RegisterPersistent dispatches even while regular hotkeys do not.
+// This is what makes the Ctrl+Alt+X toggle reachable mid-screen-share.
+func TestPersistentHotkey_FiresWhileSuspended(t *testing.T) {
+	fwm := &fakeWM{win: &fakeWindow{}, screen: wm.Rect{W: 1000, H: 800}, activeApp: "com.test.allowed"}
+	fhk := newFakeHK()
+
+	actions := []Action{
+		snapAction("snap.left", "Snap Left", "Test", snapLeftHalf),
+	}
+	shortcuts := []Shortcut{
+		{ActionID: "snap.left", Modifiers: []string{"ctrl", "alt"}, Key: "h"},
+	}
+	e, err := New(Config{
+		WindowManager: fwm,
+		HotkeyManager: fhk,
+		Actions:       actions,
+		Shortcuts:     shortcuts,
+		ToggleHotkey:  &ToggleHotkey{Modifiers: []string{"ctrl", "alt"}, Key: "x"},
+		Blocklist:     []string{"com.test.blocked"},
+		PollInterval:  20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+
+	// Force-suspend, then verify regular hotkey is blocked but the
+	// persistent toggle still flips state.
+	e.SetUserMode(UserModeForceSuspended)
+	if e.Snapshot().Active() {
+		t.Fatal("setup: expected suspended after SetUserMode(ForceSuspended)")
+	}
+
+	fhk.fire("h")
+	if got := atomic.LoadInt32(&fwm.win.calls); got != 0 {
+		t.Fatalf("regular hotkey should be blocked while suspended; got %d", got)
+	}
+
+	fhk.fire("x") // persistent — must fire and toggle state back to active
+	if !e.Snapshot().Active() {
+		t.Fatalf("persistent toggle hotkey should re-activate; got %+v", e.Snapshot())
+	}
+}
+
+// TestDefaultToggleHotkey ensures the canonical accelerator stays at Ctrl+Alt+X.
+func TestDefaultToggleHotkey(t *testing.T) {
+	tk := DefaultToggleHotkey()
+	if tk == nil {
+		t.Fatal("DefaultToggleHotkey returned nil")
+	}
+	if tk.Key != "x" {
+		t.Errorf("key: got %q want %q", tk.Key, "x")
+	}
+	if got := tk.Format(); got != "⌃⌥X" {
+		t.Errorf("Format: got %q want %q", got, "⌃⌥X")
 	}
 }
 

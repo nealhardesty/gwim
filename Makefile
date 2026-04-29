@@ -128,21 +128,50 @@ $(ICNS): $(ICONSET_DIR)/icon_1024x1024.png
 	iconutil --convert icns --output $@ $(ICONSET_DIR)
 
 .PHONY: app
-app: build $(ICNS) ## Build the macOS .app bundle into ./build/GWiM.app
+app: build $(ICNS) ## Build the macOS .app bundle into ./dist/GWiM.app (ad-hoc signed)
 	@echo "==> Assembling $(APP_BUNDLE)"
 	@rm -rf $(APP_BUNDLE)
 	@mkdir -p $(APP_MACOS) $(APP_RES)
 	@cp $(BUILD_DIR)/$(BINARY) $(APP_MACOS)/$(BINARY)
 	@cp $(ICNS) $(APP_RES)/icon.icns
 	@sed 's/__VERSION__/$(VERSION)/g' $(PLIST_TPL) > $(APP_CONTENTS)/Info.plist
+	@$(MAKE) --no-print-directory codesign
 	@touch $(APP_BUNDLE)
 	@echo "    Bundle ready: $(APP_BUNDLE)"
 
+.PHONY: codesign
+codesign: ## Ad-hoc sign the .app so macOS TCC can persist accessibility permission
+	@# CRITICAL: macOS TCC keys Accessibility permission on the binary's
+	@# codesign identifier. A bare `go build` produces a binary whose
+	@# auto-generated linker signature has Identifier=a.out and an unbound
+	@# Info.plist; every rebuild then invalidates the user's permission
+	@# silently (System Settings keeps showing it as "granted" but TCC no
+	@# longer honours it). Ad-hoc signing the bundle binds Info.plist and
+	@# uses CFBundleIdentifier (dev.nealhardesty.gwim) as the stable
+	@# codesign identifier, so the permission survives rebuilds — assuming
+	@# the bundle ID never changes.
+	@if [ ! -d "$(APP_BUNDLE)" ]; then \
+	  echo "ERROR: $(APP_BUNDLE) does not exist; run 'make app' first."; exit 1; \
+	fi
+	@echo "==> Ad-hoc signing $(APP_BUNDLE)"
+	@codesign --force --deep --sign - $(APP_BUNDLE)
+	@codesign -dv $(APP_BUNDLE) 2>&1 | grep -E '(Identifier|Signature|Sealed|Info.plist)' | sed 's/^/    /'
+
 .PHONY: install
-install: app ## Copy GWiM.app to /Applications (overwriting existing install)
+install: app ## Copy GWiM.app to /Applications, killing any running instance
+	@echo "==> Stopping any running GWiM instance"
+	-@pkill -f '/Applications/$(APP_NAME).app/Contents/MacOS/$(BINARY)' 2>/dev/null || true
+	@sleep 1
 	@echo "==> Installing to /Applications"
 	rm -rf /Applications/$(APP_NAME).app
 	cp -R $(APP_BUNDLE) /Applications/
+	@echo ""
+	@echo "Installed. If hotkeys don't fire after launch:"
+	@echo "  1. Open System Settings -> Privacy & Security -> Accessibility"
+	@echo "  2. Remove any old GWiM entry (-)"
+	@echo "  3. Re-add /Applications/GWiM.app and toggle ON"
+	@echo "  4. Quit & relaunch GWiM"
+	@echo "(Required only the FIRST time after switching to ad-hoc signing.)"
 
 .PHONY: clean
 clean: ## Remove build artifacts (binary, .app, generated icons)
