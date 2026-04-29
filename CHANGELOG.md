@@ -16,6 +16,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`make push` no longer requires a pending `CHANGELOG.md` edit.** The
+  Makefile used to abort if `CHANGELOG.md` was unchanged since the last
+  commit; that gate is removed.
+
 - **`go install github.com/nealhardesty/gwim@latest` now works.** Two
   obstacles were removed:
   1. **Main package moved to the module root.** `cmd/gwim/main.go`,

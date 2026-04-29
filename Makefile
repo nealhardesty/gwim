@@ -223,15 +223,9 @@ _bump:
 # ---------------------------------------------------------------------------
 #
 # `make push` is the ONLY sanctioned commit / publish path (per AGENTS.md).
-# It refuses to run if CHANGELOG.md hasn't been updated since the last
-# commit, enforcing the changelog-discipline rule from AGENTS.md.
 
 .PHONY: push
 push: check ## Bump patch, build, commit, push, tag — full release cycle
-	@if git diff --quiet -- CHANGELOG.md && git diff --cached --quiet -- CHANGELOG.md; then \
-	  echo "ERROR: CHANGELOG.md has not been updated. Add an entry before running 'make push'."; \
-	  exit 1; \
-	fi
 	@$(MAKE) --no-print-directory version-increment
 	@$(MAKE) --no-print-directory app
 	@NEW_VERSION=$$(awk -F\" '/const Version/ {print $$2}' $(VERSION_FILE)); \

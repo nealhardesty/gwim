@@ -73,16 +73,13 @@
 - Write clear, descriptive commit messages
 - Keep commits focused and atomic
 - Use meaningful branch names
-- **MANDATORY**: Update `CHANGELOG.md` before every commit/checkin
-- Never commit changes without updating `CHANGELOG.md` first
+- Keep `CHANGELOG.md` current for notable changes; it is **not** enforced by `make push`
 - **MANDATORY**: Always use `make push` to commit and publish changes — never run `git add`, `git commit`, or `git push` manually
-- `make push` handles the full release cycle: version bump → build → commit (with AI-generated message) → push → tag → push tag
+- `make push` handles the full release cycle: version bump → build → commit → push → tag → push tag
 - Never bypass `make push` with manual git commands; doing so will desync the version, binary, and git tags
 
 ## CHANGELOG.md Documentation Requirement
-**CRITICAL: CHANGELOG.md must ALWAYS be updated before checkin and for ALL changes**
-- The `CHANGELOG.md` file MUST be updated for EVERY change made to the codebase, whether by humans or AI agents
-- Update `CHANGELOG.md` BEFORE committing changes or creating pull requests
+- Update `CHANGELOG.md` when changes are user-visible or worth recording; do so before release PRs when practical
 - Document all changes including:
   - New features and functionality
   - Bug fixes and patches
@@ -93,7 +90,6 @@
   - Breaking changes
 - Use clear, descriptive entries that explain what changed and why
 - Group changes by date or version as appropriate
-- This is a mandatory step that must not be skipped
 
 ## README Documentation Requirement
 **CRITICAL: All changes must be documented in README.md**

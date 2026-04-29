@@ -176,11 +176,10 @@ The current version lives in [`version.go`](version.go).
 Per the project conventions (see [`AGENTS.md`](AGENTS.md)) all commits
 must go through `make push`, which:
 
-1. Verifies `CHANGELOG.md` was updated since the last commit.
-2. Runs `fmt + vet + test`.
-3. Bumps the patch version (override with `BUMP=major|minor|patch`).
-4. Rebuilds the `.app` bundle.
-5. Commits, pushes, tags, and pushes the tag.
+1. Runs `fmt + vet + test`.
+2. Bumps the patch version (override with `BUMP=major|minor|patch`).
+3. Rebuilds the `.app` bundle.
+4. Commits, pushes, tags, and pushes the tag.
 
 `make push` is the **only** sanctioned commit/publish path — never invoke
 `git add/commit/push` directly.
