@@ -1,13 +1,15 @@
 # GWiM — Golang Window Manager
 
-A lightweight, keyboard-driven window manager for macOS, written in Go. GWiM
-replaces a legacy Hammerspoon (Lua) setup with a single compiled binary that
-ships as a menu-bar agent, registers global hotkeys, and lets you suspend
-them when needed so shortcuts reach another app unchanged (e.g. remote desktop).
+A lightweight, keyboard-driven window manager for **macOS and Windows**,
+written in Go. GWiM replaces a legacy Hammerspoon (Lua) setup with a single
+compiled binary that ships as a menu-bar (macOS) or system-tray (Windows)
+agent, registers global hotkeys, and lets you suspend them when needed so
+shortcuts reach another app unchanged (e.g. remote desktop).
 
-> **Status:** macOS implementation is complete. Windows is scaffolded
-> (`internal/platform/windows/`) and is the next milestone — see
-> [`DESIGN.md`](DESIGN.md) §4.4.
+> **Status:** Both macOS and Windows are supported. The Windows port covers
+> every shortcut except the Alt-Tab switcher (Windows already has its own
+> Alt+Tab) and uses pure-Go `syscall` bindings to user32.dll / kernel32.dll
+> — no cgo, no MinGW. See [`DESIGN.md`](DESIGN.md) §4.4.
 
 ---
 
@@ -55,7 +57,33 @@ them when needed so shortcuts reach another app unchanged (e.g. remote desktop).
   - Hidden **Last action error** row appears automatically if any action
     fails (for example, if macOS revokes Accessibility permission).
 - **Single binary, ~3 MB**, no runtime dependencies beyond the macOS
-  Accessibility API.
+  Accessibility API (macOS) or user32.dll / kernel32.dll (Windows).
+
+### Differences on Windows
+
+The same engine and shortcut table run on both platforms. A few items
+shift to match Windows conventions:
+
+- **No Alt-Tab switcher.** Windows already provides Alt+Tab natively, so
+  the `⌥⇥` overlay is omitted on Windows builds.
+- **`Ctrl+Alt+F` toggles borderless fullscreen** (strip window chrome,
+  fill the monitor) instead of macOS Spaces fullscreen, which has no
+  exact Windows equivalent. A second press restores the original frame
+  and chrome.
+- **`Cmd` aliases to the Windows key** in shortcut definitions, so
+  `Ctrl+Alt+Cmd+H` (throw west) becomes Ctrl+Alt+Win+H. Some
+  reserved Win+letter combos are pre-empted by Windows itself
+  (e.g. Win+L locks); GWiM logs the failed registration but other
+  hotkeys still bind.
+- **Tray UI**: same Suspend toggle, Shortcuts submenu, Open at Login,
+  and Quit. The Accessibility / Screen Recording rows are macOS-only
+  and are hidden automatically on Windows (no equivalent permissions).
+- **Shortcuts cheatsheet** in the tray uses Microsoft-standard text
+  (`Ctrl+Alt+H`, `Win+Ctrl+Alt+Shift+K`, …) instead of the macOS
+  glyphs (`⌃⌥H`) — same key chords, native notation per platform.
+- **Open at Login** uses the standard
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` registry key
+  pointing to the running executable — no admin rights required.
 
 ## Default keybindings
 
@@ -105,15 +133,19 @@ directly from the module proxy:
 
 ```bash
 go install github.com/nealhardesty/gwim@latest
-gwim                      # launch in the foreground
+gwim                      # macOS / Linux: launch in the foreground
+gwim.exe                  # Windows: launch in the foreground
 ```
 
-This produces a working `gwim` binary but **does not** create the
+On macOS this produces a working `gwim` binary but **does not** create the
 `GWiM.app` bundle. Without the bundle the app still runs and registers
 hotkeys, but every rebuild will invalidate macOS Accessibility
 permission (TCC keys it on the codesign identity, which only the signed
 bundle pins). Use this path for quick experimentation; use Option 2 for
 a real install.
+
+On Windows the resulting `gwim.exe` is fully functional on its own — pin
+it via the tray's **Open at Login** menu item to start it on every login.
 
 ### Option 2: `make app` + `make install` (recommended on macOS)
 
@@ -138,11 +170,52 @@ If hotkeys appear to do nothing after a rebuild/install, rebind permission:
 `make app` now ad-hoc signs the `.app` bundle with a stable identifier so
 TCC permission should persist across future rebuilds.
 
+### Option 3: Windows binary
+
+The canonical `Makefile` assumes a Unix toolchain (`awk`, `find`,
+`mkdir -p`, …) that isn't on a stock Windows install. GWiM ships a
+sibling `Makefile.windows` for native Windows builds — it uses only
+`go` plus `cmd.exe` builtins and PowerShell, so it works from any
+shell as long as Go is on PATH.
+
+On Windows, with Go installed (<https://go.dev/dl/>):
+
+```powershell
+git clone https://github.com/nealhardesty/gwim.git
+cd gwim
+make -f Makefile.windows build      # produces dist\gwim.exe
+.\dist\gwim.exe                     # launch — tray icon appears
+```
+
+Other Windows-side targets (same names as the *nix Makefile where they
+apply): `test`, `vet`, `fmt`, `tidy`, `check`, `icons`, `clean`,
+`version`, `deps`. Run `make -f Makefile.windows help` for the full
+list. macOS-only targets (`app`, `codesign`, `install`, `release`,
+`push`) are deliberately absent because they don't apply on Windows.
+
+> If you have Git for Windows / MSYS2 set up and prefer the regular
+> Makefile, that works too — Git Bash provides the Unix tools the
+> canonical Makefile depends on. `Makefile.windows` is the
+> tools-free fallback.
+
+Or cross-compile from macOS / Linux:
+
+```bash
+make build-windows        # produces dist/gwim.exe (CGO disabled)
+```
+
+Once `gwim.exe` is running, open the tray menu and tick **Open at Login**
+to start it on every login (writes the standard
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` registry value).
+No admin rights, no installer.
+
 ## Development
 
 ```bash
+# *nix Makefile (macOS / Linux / Git Bash)
 make help                 # list every target
-make build                # binary -> dist/gwim
+make build                # binary -> dist/gwim (host platform)
+make build-windows        # cross-compile -> dist/gwim.exe (CGO_ENABLED=0)
 make run                  # foreground run with stdout logging
 make run-app              # launch dist/GWiM.app like a real install
 make test                 # tests with -race
@@ -150,7 +223,13 @@ make check                # fmt + vet + test (pre-commit gate)
 make app                  # full .app bundle
 make codesign             # ad-hoc sign dist/GWiM.app (run by make app)
 make install              # install signed app into /Applications
-make icons                # regenerate menu-bar PNGs and .iconset
+make icons                # regenerate tray PNGs / ICOs and the macOS .iconset
+
+# Windows-native Makefile (vanilla cmd / PowerShell, no awk/find/mkdir-p)
+make -f Makefile.windows help       # list Windows targets
+make -f Makefile.windows build      # binary -> dist\gwim.exe
+make -f Makefile.windows test       # go test -race ./...
+make -f Makefile.windows icons      # regenerate tray PNGs / ICOs
 ```
 
 ### Project layout
@@ -160,12 +239,12 @@ main.go, main_darwin.go,  # entrypoint + per-OS bootstrap (lives at module root
 main_windows.go,          # so `go install github.com/nealhardesty/gwim@latest` works)
 version.go
 internal/wm/              # platform-agnostic interfaces (Window, WindowManager, HotkeyManager, Switcher)
-internal/altswitch/       # MRU stash for the Alt-Tab switcher (platform-agnostic)
+internal/altswitch/       # MRU stash for the Alt-Tab switcher (macOS-only feature; platform-agnostic logic)
 internal/platform/macos/  # cgo bridge: AXUIElement, NSWorkspace, Carbon hotkeys, CGEventTap, NSWindow overlay
-internal/platform/windows/# (scaffold for Win32 port, see DESIGN.md §4.4)
+internal/platform/windows/# pure-Go Win32 bindings: SetWindowPos, RegisterHotKey + WM_HOTKEY pump, registry login
 internal/engine/          # action table, layout math, suspension dispatcher
-internal/ui/              # systray menu UI
-internal/icon/            # embedded menu-bar PNGs (committed; required by //go:embed)
+internal/ui/              # systray menu UI (cross-platform via getlantern/systray)
+internal/icon/            # embedded tray PNGs (macOS) and ICOs (Windows); committed for //go:embed
 scripts/gen-icon/         # regenerates the embedded icons + .iconset (run via `make icons`)
 assets/Info.plist.template# .app bundle plist (LSUIElement=YES)
 ```
@@ -173,8 +252,10 @@ assets/Info.plist.template# .app bundle plist (LSUIElement=YES)
 ### Architecture highlights
 
 - **Interface-first**: `internal/engine` and `internal/ui` know nothing
-  about macOS. The Windows port plugs into the same interfaces in
-  `internal/platform/windows/`.
+  about the host OS. Both `internal/platform/macos` (cgo + Cocoa /
+  Carbon / AX) and `internal/platform/windows` (pure-Go user32.dll /
+  kernel32.dll bindings) implement the same `wm.WindowManager` and
+  `wm.HotkeyManager` interfaces.
 - **Suspension is a state machine** driven by `UserMode` (Auto / ForceActive /
   ForceSuspended) from the menu or **`Ctrl+Alt+X`**. A background poller
   refreshes Accessibility and Screen Recording grant state for the tray; it
