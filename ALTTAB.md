@@ -86,3 +86,6 @@ macOS APIs required:
 5. Overlay closes and the highlighted window becomes focused.
 
 ---
+
+## 8.  Documentation
+- When implemented, be sure to update @README.md, @DESIGN.md and the @CHANGELOG.md appropriately to reflect the new functionality.
