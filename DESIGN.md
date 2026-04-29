@@ -97,6 +97,30 @@ The application must run with an icon in the macOS Menu Bar (and eventually the 
 * `Up` or `k`: Move window to the North Screen (if present).
 * `Down` or `j`: Move window to the South Screen (if present).
 
+### 3.7. Alt-Tab Window Switcher
+A keyboard-driven, MRU-ordered switcher across **individual windows** (not
+applications). Full requirements live in [`ALTTAB.md`](ALTTAB.md).
+
+* **Triggers:** `Option+Tab` (forward) / `Option+Shift+Tab` (backward) —
+  bound via the same `engine.Shortcut` table that drives the rest of the
+  hotkeys.
+* **Overlay:** borderless `NSWindow` centred on the primary display,
+  showing the application icon for each candidate window plus the
+  selected window's title. (MVP — live window thumbnails are deferred
+  pending the Screen Recording permission flow.)
+* **Event handling:** while the overlay is open, GWiM installs a
+  `CGEventTap` at `kCGSessionEventTap` / `kCGHeadInsertEventTap` that
+  intercepts Tab, Shift+Tab, Esc, Return, and the Option flag-changed
+  event. The tap is removed on commit/cancel so it never sees user input
+  outside an active switch.
+* **MRU bookkeeping:** `internal/altswitch/Stash` keeps the per-window
+  MRU history; the currently focused window pins to position 0 so the
+  default highlight is the second entry, matching familiar Alt-Tab.
+* **Tray integration:** the same actions appear in a "Window Switcher"
+  category in the Shortcuts submenu. Clicking opens the overlay in
+  *modal mode* (`Return` commits, `Esc` cancels) since no Option key is
+  held when invoked from the menu.
+
 ---
 
 ## 4. Technical Architecture
@@ -137,7 +161,14 @@ type HotkeyManager interface {
 * **Window Management:** Implement via macOS Accessibility API (`AXUIElement`) and `CGO` using `<ApplicationServices/ApplicationServices.h>`.
 * **Active App Detection:** Use `NSWorkspace sharedWorkspace frontmostApplication bundleIdentifier` via CGO/Objective-C to fetch the active app identifier for the suspension check.
 * **Hotkey Management:** Use `NSEvent addGlobalMonitorForEventsMatchingMask` or Carbon's `RegisterEventHotKey`.
-* **Permissions:** Requires **Accessibility Permissions** (`System Settings -> Privacy & Security -> Accessibility`).
+* **Alt-Tab Switcher** (`altswitch_native.m` + `altswitch.go`): borderless
+  `NSWindow` overlay drawn from a custom `NSView`; `CGEventTap` for
+  Tab/Shift+Tab/Esc/Return/Option-release; cross-process AX enumeration
+  via `AXUIElementCreateApplication` + `kAXWindowsAttribute`; window
+  identity via `_AXUIElementGetWindow` (long-stable private API for
+  CGWindowID lookup); raise via `kAXRaiseAction` +
+  `[NSRunningApplication activateWithOptions:]`.
+* **Permissions:** Requires **Accessibility Permissions** (`System Settings -> Privacy & Security -> Accessibility`). Live window thumbnails for the switcher (post-MVP) will additionally require **Screen Recording**.
 
 ### 4.4. Windows Extensibility (`internal/platform/windows/`)
 *(To be scaffolded)*

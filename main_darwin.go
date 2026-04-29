@@ -43,13 +43,16 @@ func startApp() error {
 
 	wmgr := macos.NewWindowManager()
 	hkmgr := macos.NewHotkeyManager()
+	switcher := macos.NewSwitcher(wmgr)
 
 	toggle := engine.DefaultToggleHotkey()
+	actions := append(engine.DefaultActions(), engine.SwitcherActions(switcher)...)
+	shortcuts := append(engine.DefaultShortcuts(), engine.SwitcherShortcuts()...)
 	eng, err := engine.New(engine.Config{
 		WindowManager: wmgr,
 		HotkeyManager: hkmgr,
-		Actions:       engine.DefaultActions(),
-		Shortcuts:     engine.DefaultShortcuts(),
+		Actions:       actions,
+		Shortcuts:     shortcuts,
 		ToggleHotkey:  toggle,
 		Blocklist:     engine.DefaultBlocklist(),
 		// NON-prompting check — the engine polls this every tick to keep

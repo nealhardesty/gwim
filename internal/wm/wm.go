@@ -60,6 +60,33 @@ type WindowManager interface {
 	MoveWindowToScreen(w Window, direction ScreenDirection) error
 }
 
+// WindowInfo describes a single OS-managed window for the Alt-Tab switcher.
+//
+// PID is the owning process; CGID is the macOS CGWindowID (or platform
+// equivalent) that uniquely identifies the window for the lifetime of the
+// process. Title and AppName are display-only.
+type WindowInfo struct {
+	PID     int32
+	CGID    uint32
+	Title   string
+	AppName string
+}
+
+// Switcher drives the Alt-Tab keyboard window switcher (per ALTTAB.md).
+//
+// The platform implementation owns the overlay UI, key event tap, MRU
+// stash, and window-raising behaviour. The engine only needs to invoke
+// the two open methods — they are bound to Option+Tab / Option+Shift+Tab.
+//
+// OpenForward and OpenBackward are also re-entrant: while the overlay is
+// already open, calling them advances the highlight in the requested
+// direction (the platform's native event tap normally handles this; the
+// re-entrant behaviour exists so tray-menu clicks can drive the switcher).
+type Switcher interface {
+	OpenForward()
+	OpenBackward()
+}
+
 // HotkeyHandler is invoked when a registered hotkey combination fires.
 type HotkeyHandler func()
 

@@ -26,6 +26,13 @@ remote-desktop clients automatically.
   enable GWiM mid-screen-sharing if you need to rearrange local windows
   without dismissing the remote session. The same toggle is on the menu
   bar.
+- **Alt-Tab window switcher** (`⌥⇥` / `⌥⇧⇥`): per-window MRU switching
+  across all running apps. Holding Option opens a centred overlay with
+  app icons; repeated Tab / Shift+Tab cycles the highlight; releasing
+  Option commits and raises the chosen window. Esc cancels. Same chord
+  is also a clickable item in the tray's **Window Switcher** submenu
+  (Return commits, Esc cancels). MVP uses app icons rather than live
+  window thumbnails — see [`ALTTAB.md`](ALTTAB.md).
 - **Menu-bar UI**:
   - One-click **Suspend / Activate** toggle.
   - **Shortcuts submenu** listing every action with its keyboard accelerator.
@@ -64,6 +71,16 @@ All snap shortcuts use **`⌃⌥`** (Ctrl+Alt). Move uses **`⌃⌥⇧`**, resiz
 | Maximize (frame)         | `↩` (Return)        |
 | Native fullscreen toggle | `F`                 |
 | **Toggle GWiM on/off**   | **`X`** *(persistent — works even during screen sharing)* |
+
+The window switcher uses its own chord (no `⌃` modifier):
+
+| Action                          | Keys             |
+|---------------------------------|------------------|
+| Open switcher (forward)         | `⌥⇥`             |
+| Open switcher (backward)        | `⌥⇧⇥`            |
+| Advance highlight while open    | `⇥` / `⇧⇥`       |
+| Commit selection                | release `⌥`, or `↩` (when opened from the tray) |
+| Cancel                          | `⎋`              |
 
 | Verb                     | Modifiers           | Keys                  |
 |--------------------------|---------------------|-----------------------|
@@ -137,8 +154,9 @@ make icons                # regenerate menu-bar PNGs and .iconset
 main.go, main_darwin.go,  # entrypoint + per-OS bootstrap (lives at module root
 main_windows.go,          # so `go install github.com/nealhardesty/gwim@latest` works)
 version.go
-internal/wm/              # platform-agnostic interfaces (Window, WindowManager, HotkeyManager)
-internal/platform/macos/  # cgo bridge: AXUIElement, NSWorkspace, Carbon hotkeys
+internal/wm/              # platform-agnostic interfaces (Window, WindowManager, HotkeyManager, Switcher)
+internal/altswitch/       # MRU stash for the Alt-Tab switcher (platform-agnostic)
+internal/platform/macos/  # cgo bridge: AXUIElement, NSWorkspace, Carbon hotkeys, CGEventTap, NSWindow overlay
 internal/platform/windows/# (scaffold for Win32 port, see DESIGN.md §4.4)
 internal/engine/          # action table, layout math, suspension dispatcher
 internal/ui/              # systray menu UI

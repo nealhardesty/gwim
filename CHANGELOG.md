@@ -8,6 +8,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Alt-Tab window switcher** (per `ALTTAB.md`, MVP). New chord `⌥⇥` /
+  `⌥⇧⇥` opens a borderless overlay centred on the primary display
+  showing application icons for every standard window across all running
+  regular apps, MRU-ordered with the currently focused window pinned to
+  position 0. Holding Option keeps the overlay open; repeated `⇥` /
+  `⇧⇥` advance the highlight; releasing Option commits and raises the
+  selected window via AX `kAXRaiseAction` + `NSRunningApplication
+  activateWithOptions:`. The same actions appear in a new tray
+  **Window Switcher** submenu category — clicking from the menu opens
+  the overlay in modal mode where `↩` commits and `⎋` cancels. New
+  packages: `internal/altswitch` (platform-agnostic MRU stash with race-
+  clean tests) and `internal/platform/macos/altswitch_native.m`
+  (NSWindow overlay + custom NSView, `CGEventTap` for the in-overlay
+  key handling, AX-driven window enumeration + raise). MVP uses app
+  icons only; live window thumbnails (and the corresponding Screen
+  Recording permission flow) are deferred.
+
 - **Open at Login** menu-bar checkbox (macOS 13+, from `GWiM.app` only)
   using `SMAppService` to register or unregister the main app as a login
   item. Failures surface in the tray’s “Last action” row.
