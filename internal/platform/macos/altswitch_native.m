@@ -7,11 +7,12 @@
 // extern symbols and calls into them; the //export'd Go callback
 // gwimAltswitchEvent receives event-tap notifications.
 //
-// Three responsibilities:
+// Four responsibilities:
 //
-//  1. Borderless NSWindow overlay drawn from the main thread, showing the
-//     application icons (no live thumbnails for the MVP per ALTTAB §6
-//     fallback) with a selection ring.
+//  1. Borderless NSWindow overlay drawn from the main thread. Each slot
+//     shows a live window thumbnail (when Screen Recording permission is
+//     granted) plus the application icon as a small badge; falls back to
+//     the app icon alone when capture is unavailable, per ALTTAB §6.
 //
 //  2. CGEventTap installed only while the overlay is open. Captures Tab,
 //     Shift+Tab, Esc, Return, and the Option flag-changed event so the
@@ -21,9 +22,13 @@
 //     long-stable private API used by Hammerspoon, Yabai, Rectangle, etc.)
 //     to correlate AXUIElementRef with CGWindowID so the MRU stash can
 //     identify windows by a stable key.
+//
+//  4. Screen Recording permission probe + request, mirroring the
+//     accessibility-permission helpers used by the rest of GWiM.
 
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -43,10 +48,21 @@ extern AXError _AXUIElementGetWindow(AXUIElementRef element, CGWindowID *out);
 // Overlay window
 // =====================================================================
 
+// Slot geometry shared between layout (gwim_overlay_show) and drawing
+// (GWIMOverlayView drawRect:). Slots are 3:2 to match typical window
+// aspect; when no thumbnail is available we draw the app icon centred
+// inside the same rectangle so the overlay's geometry doesn't reflow
+// based on Screen Recording permission state.
+static const CGFloat kGwimSlotW   = 144.0;
+static const CGFloat kGwimSlotH   = 96.0;
+static const CGFloat kGwimSlotPad = 18.0;
+static const CGFloat kGwimTitleH  = 30.0;
+
 @interface GWIMOverlayView : NSView
-@property (nonatomic, strong) NSArray *icons;     // NSImage* or NSNull*
-@property (nonatomic, strong) NSArray *titles;    // NSString*
-@property (nonatomic, strong) NSArray *appNames;  // NSString*
+@property (nonatomic, strong) NSArray *icons;       // NSImage* or NSNull* (always app icons)
+@property (nonatomic, strong) NSArray *thumbnails;  // NSImage* or NSNull* (one per slot)
+@property (nonatomic, strong) NSArray *titles;      // NSString*
+@property (nonatomic, strong) NSArray *appNames;    // NSString*
 @property (nonatomic) NSInteger selected;
 @property (nonatomic) NSInteger cols;
 @end
@@ -54,6 +70,20 @@ extern AXError _AXUIElementGetWindow(AXUIElementRef element, CGWindowID *out);
 @implementation GWIMOverlayView
 
 - (BOOL)isFlipped { return NO; }
+
+// aspectFitRect returns the largest rectangle inside `bounds` that has
+// the same aspect ratio as `imageSize`, centred within bounds.
+static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
+    if (imageSize.width <= 0 || imageSize.height <= 0) return bounds;
+    CGFloat sw = bounds.size.width / imageSize.width;
+    CGFloat sh = bounds.size.height / imageSize.height;
+    CGFloat s  = sw < sh ? sw : sh;
+    CGFloat w  = imageSize.width * s;
+    CGFloat h  = imageSize.height * s;
+    return NSMakeRect(bounds.origin.x + (bounds.size.width  - w) / 2.0,
+                      bounds.origin.y + (bounds.size.height - h) / 2.0,
+                      w, h);
+}
 
 - (void)drawRect:(NSRect)dirty {
     [[NSColor clearColor] setFill];
@@ -68,28 +98,29 @@ extern AXError _AXUIElementGetWindow(AXUIElementRef element, CGWindowID *out);
     NSInteger n = (NSInteger)[self.icons count];
     if (n == 0) return;
 
-    const CGFloat iconSize = 96.0;
-    const CGFloat pad      = 18.0;
-    const CGFloat titleH   = 30.0;
+    const CGFloat slotW = kGwimSlotW;
+    const CGFloat slotH = kGwimSlotH;
+    const CGFloat pad   = kGwimSlotPad;
+    const CGFloat titleH = kGwimTitleH;
 
     NSInteger cols = self.cols > 0 ? self.cols : n;
     if (cols > n) cols = n;
     NSInteger rows = (n + cols - 1) / cols;
 
-    CGFloat gridW = cols * iconSize + (cols - 1) * pad;
-    CGFloat gridH = rows * iconSize + (rows - 1) * pad;
+    CGFloat gridW = cols * slotW + (cols - 1) * pad;
+    CGFloat gridH = rows * slotH + (rows - 1) * pad;
     CGFloat startX = (self.bounds.size.width - gridW) / 2.0;
     CGFloat startY = (self.bounds.size.height + gridH) / 2.0 + titleH / 2.0;
 
     for (NSInteger i = 0; i < n; i++) {
         NSInteger row = i / cols;
         NSInteger col = i % cols;
-        CGFloat x = startX + col * (iconSize + pad);
-        CGFloat y = startY - (row + 1) * iconSize - row * pad;
-        NSRect iconRect = NSMakeRect(x, y, iconSize, iconSize);
+        CGFloat x = startX + col * (slotW + pad);
+        CGFloat y = startY - (row + 1) * slotH - row * pad;
+        NSRect slotRect = NSMakeRect(x, y, slotW, slotH);
 
         if (i == self.selected) {
-            NSRect ring = NSInsetRect(iconRect, -10, -10);
+            NSRect ring = NSInsetRect(slotRect, -10, -10);
             [[NSColor colorWithCalibratedWhite:1.0 alpha:0.20] setFill];
             NSBezierPath *r = [NSBezierPath bezierPathWithRoundedRect:ring
                                                               xRadius:14 yRadius:14];
@@ -99,17 +130,61 @@ extern AXError _AXUIElementGetWindow(AXUIElementRef element, CGWindowID *out);
             [r stroke];
         }
 
-        id iconObj = self.icons[i];
-        if ([iconObj isKindOfClass:[NSImage class]]) {
-            NSImage *icon = (NSImage *)iconObj;
-            [icon drawInRect:iconRect
-                    fromRect:NSZeroRect
-                   operation:NSCompositingOperationSourceOver
-                    fraction:1.0];
+        id thumbObj = (i < (NSInteger)self.thumbnails.count)
+            ? self.thumbnails[i] : (id)[NSNull null];
+        id iconObj  = self.icons[i];
+        BOOL haveThumb = [thumbObj isKindOfClass:[NSImage class]];
+        BOOL haveIcon  = [iconObj  isKindOfClass:[NSImage class]];
+
+        if (haveThumb) {
+            // Inset slightly so a thumbnail doesn't overlap the selection
+            // ring; aspect-fit so window proportions are preserved.
+            NSRect thumbBounds = NSInsetRect(slotRect, 4, 4);
+            NSImage *thumb = (NSImage *)thumbObj;
+            NSRect drawRect = aspectFitRect([thumb size], thumbBounds);
+
+            // Soft rounded clip + subtle background so letterbox bars are
+            // less obtrusive when the thumbnail isn't 3:2.
+            [[NSColor colorWithCalibratedWhite:0.0 alpha:0.55] setFill];
+            NSBezierPath *frame = [NSBezierPath bezierPathWithRoundedRect:thumbBounds
+                                                                  xRadius:6 yRadius:6];
+            [frame fill];
+
+            [NSGraphicsContext saveGraphicsState];
+            [frame addClip];
+            [thumb drawInRect:drawRect
+                     fromRect:NSZeroRect
+                    operation:NSCompositingOperationSourceOver
+                     fraction:1.0];
+            [NSGraphicsContext restoreGraphicsState];
+
+            // App icon badge in the bottom-right corner.
+            if (haveIcon) {
+                const CGFloat badge = 28.0;
+                NSRect badgeRect = NSMakeRect(
+                    NSMaxX(slotRect) - badge - 6,
+                    NSMinY(slotRect) + 6,
+                    badge, badge);
+                [(NSImage *)iconObj drawInRect:badgeRect
+                                      fromRect:NSZeroRect
+                                     operation:NSCompositingOperationSourceOver
+                                      fraction:1.0];
+            }
+        } else if (haveIcon) {
+            // No thumbnail — fall back to the app icon centred large.
+            const CGFloat iconSize = 64.0;
+            NSRect iconRect = NSMakeRect(
+                slotRect.origin.x + (slotW - iconSize) / 2.0,
+                slotRect.origin.y + (slotH - iconSize) / 2.0,
+                iconSize, iconSize);
+            [(NSImage *)iconObj drawInRect:iconRect
+                                  fromRect:NSZeroRect
+                                 operation:NSCompositingOperationSourceOver
+                                  fraction:1.0];
         } else {
-            // No icon — draw a placeholder square so the slot is visible.
+            // No icon and no thumbnail — placeholder so the slot is visible.
             [[NSColor colorWithCalibratedWhite:0.4 alpha:1.0] setFill];
-            NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:iconRect
+            NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:slotRect
                                                               xRadius:10 yRadius:10];
             [p fill];
         }
@@ -140,11 +215,110 @@ extern AXError _AXUIElementGetWindow(AXUIElementRef element, CGWindowID *out);
 static NSWindow       *gOverlayWindow = nil;
 static GWIMOverlayView *gOverlayView   = nil;
 
+// gwim_capture_thumbnails snapshots a batch of windows by CGWindowID
+// using ScreenCaptureKit (macOS 14+). Returns an NSArray of `count`
+// objects, each either an NSImage* or NSNull* on failure (denied
+// permission, occluded, owning app exited between enumeration and
+// capture, etc.). The pre-macOS-14 path returns all-NSNull*; users on
+// older releases get the icon-only fallback.
+//
+// CGWindowListCreateImage was the obvious fit here but Apple obsoleted
+// it in the macOS 15 SDK — the symbol is no longer linkable. SCK is the
+// only forward-compatible option.
+//
+// SCK's capture API is async, so we bridge to sync via dispatch
+// semaphores. This function is called from a goroutine (showOverlay
+// runs off the Carbon hotkey dispatch goroutine), never from the main
+// thread, so the blocking is harmless. Per-window timeout is 1 s; the
+// up-front getShareableContent call gets 2 s.
+//
+// Cost ballpark: getShareableContent ≈ 10–40 ms; each capture ≈ 5–15 ms.
+// For ~10 windows total switcher-open latency is ~100–200 ms. If that
+// becomes a concern we can issue captures concurrently.
+static NSArray *gwim_capture_thumbnails(int *cgids, int count) {
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:count];
+    for (int i = 0; i < count; i++) [out addObject:[NSNull null]];
+    if (count == 0) return out;
+
+    if (@available(macOS 14, *)) {
+        __block SCShareableContent *content = nil;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        [SCShareableContent getShareableContentExcludingDesktopWindows:NO
+                                                  onScreenWindowsOnly:YES
+                                                    completionHandler:
+            ^(SCShareableContent * _Nullable c, NSError * _Nullable error) {
+                (void)error;
+                content = c;
+                dispatch_semaphore_signal(sem);
+            }];
+        if (dispatch_semaphore_wait(sem,
+                dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) {
+            return out;
+        }
+        if (content == nil) return out;
+
+        NSMutableDictionary<NSNumber *, SCWindow *> *wmap =
+            [NSMutableDictionary dictionary];
+        for (SCWindow *w in content.windows) {
+            wmap[@(w.windowID)] = w;
+        }
+
+        for (int i = 0; i < count; i++) {
+            uint32_t cgid = (uint32_t)cgids[i];
+            if (cgid == 0) continue;
+            SCWindow *target = wmap[@(cgid)];
+            if (target == nil) continue;
+
+            SCContentFilter *filter = [[SCContentFilter alloc]
+                initWithDesktopIndependentWindow:target];
+            SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
+            NSInteger w = (NSInteger)target.frame.size.width;
+            NSInteger h = (NSInteger)target.frame.size.height;
+            config.width  = w > 0 ? w : 320;
+            config.height = h > 0 ? h : 200;
+            config.scalesToFit = YES;
+            config.showsCursor = NO;
+
+            __block CGImageRef img = NULL;
+            dispatch_semaphore_t sem2 = dispatch_semaphore_create(0);
+            [SCScreenshotManager captureImageWithFilter:filter
+                                          configuration:config
+                                      completionHandler:
+                ^(CGImageRef _Nullable image, NSError * _Nullable error) {
+                    (void)error;
+                    if (image != NULL) img = CGImageRetain(image);
+                    dispatch_semaphore_signal(sem2);
+                }];
+            dispatch_semaphore_wait(sem2,
+                dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC));
+
+            if (img != NULL) {
+                NSImage *ni = [[NSImage alloc] initWithCGImage:img
+                                                          size:NSZeroSize];
+                CGImageRelease(img);
+                out[i] = ni;
+            }
+        }
+    }
+    return out;
+}
+
 // gwim_overlay_show builds (or reuses) the overlay NSWindow and displays
-// it centred on the primary screen. Caller passes parallel arrays of PIDs
-// + (title, app_name) C strings; the C strings are copied into NSStrings,
-// they may be freed by the caller after the call returns.
+// it centred on the primary screen.
+//
+// Parallel arrays:
+//   pids[i]              — owning process pid (used for app icon lookup)
+//   cgids[i]             — CGWindowID (used for thumbnail capture; 0 to skip)
+//   titles_and_apps[i*2] — window title (UTF-8 C string, may be empty)
+//   titles_and_apps[i*2+1] — application localised name (UTF-8 C string)
+//
+// All C strings are copied into NSStrings before this returns; the caller
+// may free them immediately afterwards. Thumbnails are captured
+// synchronously inside this call; on a typical session that's <100 ms
+// total even for ~10 windows. Capture failure (Screen Recording denied,
+// occluded window, etc.) silently falls back to the app icon.
 void gwim_overlay_show(int *pids,
+                       int *cgids,
                        const char **titles_and_apps,
                        int count,
                        int selected) {
@@ -167,14 +341,23 @@ void gwim_overlay_show(int *pids,
         [appArr   addObject:(a ? [NSString stringWithUTF8String:a] : @"")];
     }
 
-    // Lay out: at most 8 columns, wrap into rows.
-    int cols = count < 8 ? count : 8;
+    // Batch-capture thumbnails. Returns NSNull* placeholders for windows
+    // we couldn't snapshot (denied permission, occluded, gone), so the
+    // overlay falls back to the app icon for those slots.
+    NSArray *thumbnails = (cgids != NULL)
+        ? gwim_capture_thumbnails(cgids, count)
+        : [NSArray array];
+
+    // Lay out: at most 6 columns (slots are wider for thumbnails), wrap
+    // into rows for larger window counts.
+    int cols = count < 6 ? count : 6;
     int rows = (count + cols - 1) / cols;
 
-    const CGFloat iconSize = 96.0;
-    const CGFloat pad      = 18.0;
-    CGFloat width  = pad * 2 + cols * iconSize + (cols - 1) * pad + 40.0;
-    CGFloat height = pad * 2 + rows * iconSize + (rows - 1) * pad + 50.0;
+    const CGFloat slotW = kGwimSlotW;
+    const CGFloat slotH = kGwimSlotH;
+    const CGFloat pad   = kGwimSlotPad;
+    CGFloat width  = pad * 2 + cols * slotW + (cols - 1) * pad + 40.0;
+    CGFloat height = pad * 2 + rows * slotH + (rows - 1) * pad + 50.0;
     if (width  < 320) width  = 320;
     if (height < 180) height = 180;
 
@@ -212,11 +395,12 @@ void gwim_overlay_show(int *pids,
             [gOverlayView   setFrameSize:NSMakeSize(width, height)];
         }
 
-        gOverlayView.icons    = icons;
-        gOverlayView.titles   = titleArr;
-        gOverlayView.appNames = appArr;
-        gOverlayView.cols     = cols;
-        gOverlayView.selected = selected;
+        gOverlayView.icons      = icons;
+        gOverlayView.thumbnails = thumbnails;
+        gOverlayView.titles     = titleArr;
+        gOverlayView.appNames   = appArr;
+        gOverlayView.cols       = cols;
+        gOverlayView.selected   = selected;
         [gOverlayView setNeedsDisplay:YES];
 
         [gOverlayWindow orderFrontRegardless];
@@ -539,4 +723,32 @@ bool gwim_raise_window(pid_t pid, uint32_t cgid) {
         [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
     }
     return raised;
+}
+
+// =====================================================================
+// Screen Recording permission
+// =====================================================================
+//
+// Probe with CGPreflightScreenCaptureAccess (silent — never prompts), and
+// trigger the system prompt with CGRequestScreenCaptureAccess. Available
+// on macOS 10.15+. On older releases we report "granted" so the rest of
+// the code degrades to the legacy "no permission gate" behaviour.
+//
+// The request call adds GWiM to System Settings → Privacy & Security →
+// Screen Recording on first use; the user still has to flip the toggle.
+// macOS 14 requires the host app be quit and relaunched after toggling,
+// which the tray's "click to fix" hint reflects.
+
+bool gwim_screen_recording_granted(void) {
+    if (@available(macOS 10.15, *)) {
+        return CGPreflightScreenCaptureAccess();
+    }
+    return true;
+}
+
+bool gwim_screen_recording_request(void) {
+    if (@available(macOS 10.15, *)) {
+        return CGRequestScreenCaptureAccess();
+    }
+    return true;
 }

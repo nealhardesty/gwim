@@ -105,9 +105,12 @@ applications). Full requirements live in [`ALTTAB.md`](ALTTAB.md).
   bound via the same `engine.Shortcut` table that drives the rest of the
   hotkeys.
 * **Overlay:** borderless `NSWindow` centred on the primary display,
-  showing the application icon for each candidate window plus the
-  selected window's title. (MVP — live window thumbnails are deferred
-  pending the Screen Recording permission flow.)
+  showing a live window thumbnail per slot (captured via
+  ScreenCaptureKit's `SCScreenshotManager`, macOS 14+) with the
+  application icon as a small badge in the bottom-right corner; falls
+  back to a centred app icon when capture fails (Screen Recording
+  denied, occluded window, owning process gone, etc.). The selected
+  window's full title is shown in a strip below the grid.
 * **Event handling:** while the overlay is open, GWiM installs a
   `CGEventTap` at `kCGSessionEventTap` / `kCGHeadInsertEventTap` that
   intercepts Tab, Shift+Tab, Esc, Return, and the Option flag-changed
@@ -167,8 +170,16 @@ type HotkeyManager interface {
   via `AXUIElementCreateApplication` + `kAXWindowsAttribute`; window
   identity via `_AXUIElementGetWindow` (long-stable private API for
   CGWindowID lookup); raise via `kAXRaiseAction` +
-  `[NSRunningApplication activateWithOptions:]`.
-* **Permissions:** Requires **Accessibility Permissions** (`System Settings -> Privacy & Security -> Accessibility`). Live window thumbnails for the switcher (post-MVP) will additionally require **Screen Recording**.
+  `[NSRunningApplication activateWithOptions:]`. Live thumbnails are
+  captured via `SCScreenshotManager.captureImageWithFilter:` (macOS 14+),
+  using `SCShareableContent` once per overlay open to map CGWindowID →
+  `SCWindow`. Screen Recording permission is probed via
+  `CGPreflightScreenCaptureAccess` and triggered via
+  `CGRequestScreenCaptureAccess`.
+* **Permissions:** Requires **Accessibility** (System Settings → Privacy
+  & Security → Accessibility). Live window thumbnails additionally
+  require **Screen Recording**; switcher degrades gracefully to icons
+  alone when Screen Recording is denied.
 
 ### 4.4. Windows Extensibility (`internal/platform/windows/`)
 *(To be scaffolded)*

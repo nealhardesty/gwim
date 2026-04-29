@@ -43,6 +43,19 @@ type Tray struct {
 	// `open x-apple.systempreferences:...` shell shortcut.
 	OpenAccessibilitySettings func()
 
+	// OpenScreenRecordingSettings mirrors OpenAccessibilitySettings for
+	// the Screen Recording permission used by the Alt-Tab switcher's
+	// live thumbnails. May be nil; if set, the tray surfaces a clickable
+	// "Screen Recording: …" row that triggers it.
+	OpenScreenRecordingSettings func()
+
+	// RequestScreenRecording, when non-nil, is invoked the first time
+	// the user clicks the Screen Recording row to add GWiM to System
+	// Settings → Privacy & Security → Screen Recording. macOS prompts
+	// once per app; subsequent clicks should fall through to
+	// OpenScreenRecordingSettings to nudge the user.
+	RequestScreenRecording func() bool
+
 	// LaunchAtLogin, if set and Supported() is true, adds a checkable
 	// "Open at Login" row (macOS 13+ from GWiM.app).
 	LaunchAtLogin *LaunchAtLoginHooks
@@ -52,6 +65,7 @@ type Tray struct {
 	mItemStatus  *systray.MenuItem
 	mItemActive  *systray.MenuItem
 	mItemAccess  *systray.MenuItem
+	mItemScreen  *systray.MenuItem
 	mItemLastErr *systray.MenuItem
 	mItemLaunch  *systray.MenuItem
 
@@ -107,10 +121,15 @@ func (t *Tray) build() {
 	// AX status is clickable — clicking opens System Settings so the
 	// user can fix a denied permission without hunting through menus.
 	t.mItemAccess = systray.AddMenuItem("Accessibility: (checking…)", "Click to open System Settings")
+	// Screen Recording is the optional companion permission — granted
+	// state enables live window thumbnails in the Alt-Tab switcher.
+	t.mItemScreen = systray.AddMenuItem("Screen Recording: (checking…)", "Click to enable live thumbnails in the switcher")
+	t.mItemScreen.Hide() // unhide once we know the state
 	t.mItemLastErr = systray.AddMenuItem("Last action: ok", "")
 	t.mItemLastErr.Disable()
 	t.mItemLastErr.Hide()
 	go t.handleAccessClick()
+	go t.handleScreenClick()
 
 	if t.LaunchAtLogin != nil && t.LaunchAtLogin.Supported != nil && t.LaunchAtLogin.Supported() &&
 		t.LaunchAtLogin.IsOn != nil && t.LaunchAtLogin.Set != nil {
@@ -247,6 +266,29 @@ func (t *Tray) handleAccessClick() {
 	}
 }
 
+// handleScreenClick handles clicks on the Screen Recording status item.
+//
+// First click triggers RequestScreenRecording (which prompts macOS to
+// add GWiM to System Settings → Privacy & Security → Screen Recording).
+// Subsequent clicks open the panel directly, since on macOS 14+ the
+// permission only takes effect after relaunch.
+func (t *Tray) handleScreenClick() {
+	for {
+		select {
+		case <-t.stopShortcutCh:
+			return
+		case <-t.mItemScreen.ClickedCh:
+			if t.RequestScreenRecording != nil {
+				t.RequestScreenRecording()
+			}
+			t.eng.RefreshScreenRecording()
+			if t.OpenScreenRecordingSettings != nil {
+				t.OpenScreenRecordingSettings()
+			}
+		}
+	}
+}
+
 func (t *Tray) handleLaunchAtLogin() {
 	for {
 		select {
@@ -322,6 +364,22 @@ func (t *Tray) refresh(s engine.SuspensionState) {
 		t.mItemAccess.SetTitle("Accessibility: granted ✓")
 	default:
 		t.mItemAccess.SetTitle("Accessibility: DENIED — click to fix")
+	}
+
+	// Screen Recording row — informational. The Alt-Tab switcher
+	// degrades gracefully (app icons only) when this is denied, so this
+	// is a "click to upgrade to live thumbnails" affordance rather than
+	// a hard error. We hide the row entirely when the engine wasn't
+	// configured with a probe (e.g. unit tests).
+	if !s.ScreenRecordingChecked {
+		t.mItemScreen.Hide()
+	} else {
+		t.mItemScreen.Show()
+		if s.ScreenRecordingGranted {
+			t.mItemScreen.SetTitle("Screen Recording: granted ✓")
+		} else {
+			t.mItemScreen.SetTitle("Screen Recording: off — click to enable thumbnails")
+		}
 	}
 
 	if s.LastActionError != "" {

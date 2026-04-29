@@ -57,7 +57,8 @@ func startApp() error {
 		Blocklist:     engine.DefaultBlocklist(),
 		// NON-prompting check — the engine polls this every tick to keep
 		// the tray's "Accessibility: granted/denied" row honest.
-		AccessibilityCheck: func() bool { return macos.RequestAccessibilityPermission(false) },
+		AccessibilityCheck:   func() bool { return macos.RequestAccessibilityPermission(false) },
+		ScreenRecordingCheck: macos.ScreenRecordingGranted,
 	})
 	if err != nil {
 		return fmt.Errorf("engine init: %w", err)
@@ -78,6 +79,8 @@ func startApp() error {
 	tray := ui.New(eng, Version, toggle.Format())
 	// Wire the "click to fix" affordance on the AX status row.
 	tray.OpenAccessibilitySettings = openAccessibilityPane
+	tray.OpenScreenRecordingSettings = openScreenRecordingPane
+	tray.RequestScreenRecording = macos.RequestScreenRecording
 	tray.LaunchAtLogin = &ui.LaunchAtLoginHooks{
 		Supported: macos.LaunchAtLoginSupported,
 		IsOn:      macos.LaunchAtLoginEnabled,
@@ -101,5 +104,16 @@ func openAccessibilityPane() {
 	const url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 	if err := exec.Command("open", url).Start(); err != nil {
 		log.Printf("open accessibility settings: %v", err)
+	}
+}
+
+// openScreenRecordingPane is the analogue for the Screen Recording row
+// (used by the Alt-Tab switcher's live thumbnails). Same URL scheme,
+// different anchor. macOS 14+ requires the user to relaunch GWiM after
+// flipping the toggle for permission to take effect.
+func openScreenRecordingPane() {
+	const url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+	if err := exec.Command("open", url).Start(); err != nil {
+		log.Printf("open screen-recording settings: %v", err)
 	}
 }

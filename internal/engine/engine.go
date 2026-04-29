@@ -66,6 +66,9 @@ type Engine struct {
 	axCheck   func() bool
 	axGranted atomic.Bool // last result of axCheck
 
+	srCheck   func() bool
+	srGranted atomic.Bool // last result of srCheck
+
 	lastErrMu sync.Mutex
 	lastErr   string // last action failure, surfaced via Snapshot
 
@@ -88,16 +91,23 @@ type Engine struct {
 // and exposed here so the tray can warn the user when permission has been
 // silently revoked — a notorious macOS TCC failure mode triggered by
 // rebuilding the binary with a different code signature.
+//
+// ScreenRecordingGranted mirrors AccessibilityGranted but for the Screen
+// Recording entitlement (used by the Alt-Tab switcher's live thumbnails).
+// Switcher functionality degrades gracefully when denied, so this is an
+// informational signal for the tray rather than a hard gate.
 type SuspensionState struct {
-	UserMode             UserMode
-	UserSuspended        bool // == UserMode == UserModeForceSuspended (compat alias)
-	AutoSuspended        bool
-	ActiveAppID          string
-	ActiveAppBlocked     bool
-	ManagedHotkeyCount   int
-	AccessibilityChecked bool   // false when no Config.AccessibilityCheck supplied
-	AccessibilityGranted bool   // last result of AccessibilityCheck()
-	LastActionError      string // most recent action failure message, "" if clean
+	UserMode               UserMode
+	UserSuspended          bool // == UserMode == UserModeForceSuspended (compat alias)
+	AutoSuspended          bool
+	ActiveAppID            string
+	ActiveAppBlocked       bool
+	ManagedHotkeyCount     int
+	AccessibilityChecked   bool   // false when no Config.AccessibilityCheck supplied
+	AccessibilityGranted   bool   // last result of AccessibilityCheck()
+	ScreenRecordingChecked bool   // false when no Config.ScreenRecordingCheck supplied
+	ScreenRecordingGranted bool   // last result of ScreenRecordingCheck()
+	LastActionError        string // most recent action failure message, "" if clean
 }
 
 // Active reports whether GWiM is currently dispatching hotkeys.
@@ -129,16 +139,20 @@ func (s SuspensionState) Active() bool {
 // after every failed action to refresh SuspensionState.AccessibilityGranted.
 // It MUST be a NON-prompting check (returning the current grant state
 // without showing a dialog) — repeated prompts would be hostile.
+//
+// ScreenRecordingCheck mirrors AccessibilityCheck for the Screen Recording
+// permission. Same prompting contract: NON-prompting only.
 type Config struct {
-	WindowManager      wm.WindowManager
-	HotkeyManager      wm.HotkeyManager
-	Actions            []Action
-	Shortcuts          []Shortcut
-	ToggleHotkey       *ToggleHotkey
-	Blocklist          []string
-	PollInterval       time.Duration
-	Logger             *log.Logger
-	AccessibilityCheck func() bool
+	WindowManager        wm.WindowManager
+	HotkeyManager        wm.HotkeyManager
+	Actions              []Action
+	Shortcuts            []Shortcut
+	ToggleHotkey         *ToggleHotkey
+	Blocklist            []string
+	PollInterval         time.Duration
+	Logger               *log.Logger
+	AccessibilityCheck   func() bool
+	ScreenRecordingCheck func() bool
 }
 
 // New constructs an Engine. Required dependencies are validated upfront
@@ -171,9 +185,13 @@ func New(cfg Config) (*Engine, error) {
 		pollInterval: cfg.PollInterval,
 		logger:       cfg.Logger,
 		axCheck:      cfg.AccessibilityCheck,
+		srCheck:      cfg.ScreenRecordingCheck,
 	}
 	if e.axCheck != nil {
 		e.axGranted.Store(e.axCheck())
+	}
+	if e.srCheck != nil {
+		e.srGranted.Store(e.srCheck())
 	}
 	for i := range e.actions {
 		a := &e.actions[i]
@@ -348,15 +366,17 @@ func (e *Engine) Snapshot() SuspensionState {
 	lastErr := e.lastErr
 	e.lastErrMu.Unlock()
 	return SuspensionState{
-		UserMode:             mode,
-		UserSuspended:        mode == UserModeForceSuspended,
-		AutoSuspended:        e.autoSuspended.Load(),
-		ActiveAppID:          appID,
-		ActiveAppBlocked:     e.isBlocked(appID),
-		ManagedHotkeyCount:   len(e.shortcuts),
-		AccessibilityChecked: e.axCheck != nil,
-		AccessibilityGranted: e.axGranted.Load(),
-		LastActionError:      lastErr,
+		UserMode:               mode,
+		UserSuspended:          mode == UserModeForceSuspended,
+		AutoSuspended:          e.autoSuspended.Load(),
+		ActiveAppID:            appID,
+		ActiveAppBlocked:       e.isBlocked(appID),
+		ManagedHotkeyCount:     len(e.shortcuts),
+		AccessibilityChecked:   e.axCheck != nil,
+		AccessibilityGranted:   e.axGranted.Load(),
+		ScreenRecordingChecked: e.srCheck != nil,
+		ScreenRecordingGranted: e.srGranted.Load(),
+		LastActionError:        lastErr,
 	}
 }
 
@@ -372,6 +392,20 @@ func (e *Engine) RefreshAccessibility() {
 	if prev != now {
 		e.axGranted.Store(now)
 		e.applySuspension(fmt.Sprintf("accessibility -> %t", now))
+	}
+}
+
+// RefreshScreenRecording re-runs the Screen Recording check (without
+// prompting) and notifies listeners if the state changed.
+func (e *Engine) RefreshScreenRecording() {
+	if e.srCheck == nil {
+		return
+	}
+	prev := e.srGranted.Load()
+	now := e.srCheck()
+	if prev != now {
+		e.srGranted.Store(now)
+		e.applySuspension(fmt.Sprintf("screen-recording -> %t", now))
 	}
 }
 
@@ -419,6 +453,16 @@ func (e *Engine) blocklistPoller(ctx context.Context) {
 					changed = true
 					if reason == "" {
 						reason = fmt.Sprintf("accessibility -> %t", granted)
+					}
+				}
+			}
+			if e.srCheck != nil {
+				granted := e.srCheck()
+				if e.srGranted.Load() != granted {
+					e.srGranted.Store(granted)
+					changed = true
+					if reason == "" {
+						reason = fmt.Sprintf("screen-recording -> %t", granted)
 					}
 				}
 			}

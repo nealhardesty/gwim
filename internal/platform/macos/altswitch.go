@@ -3,7 +3,7 @@
 package macos
 
 /*
-#cgo darwin LDFLAGS: -framework Cocoa -framework AppKit -framework ApplicationServices -framework CoreGraphics -framework Carbon
+#cgo darwin LDFLAGS: -framework Cocoa -framework AppKit -framework ApplicationServices -framework CoreGraphics -framework Carbon -framework ScreenCaptureKit
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -22,7 +22,7 @@ extern int  gwim_enumerate_windows(gwim_window_entry *out_arr, int max,
 extern void gwim_free_window_entries(gwim_window_entry *arr, int count);
 extern bool gwim_raise_window(pid_t pid, uint32_t cgid);
 
-extern void gwim_overlay_show(int *pids, const char **titles_and_apps,
+extern void gwim_overlay_show(int *pids, int *cgids, const char **titles_and_apps,
                                int count, int selected);
 extern void gwim_overlay_update_selected(int idx);
 extern void gwim_overlay_hide(void);
@@ -30,6 +30,9 @@ extern void gwim_overlay_hide(void);
 extern bool gwim_eventtap_install(void);
 extern void gwim_eventtap_remove(void);
 extern bool gwim_option_currently_down(void);
+
+extern bool gwim_screen_recording_granted(void);
+extern bool gwim_screen_recording_request(void);
 */
 import "C"
 
@@ -246,6 +249,7 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 		return
 	}
 	pids := make([]C.int, n)
+	cgids := make([]C.int, n)
 	titlePtrs := make([]*C.char, n*2)
 	allocs := make([]*C.char, 0, n*2)
 	defer func() {
@@ -256,6 +260,7 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 
 	for i, it := range items {
 		pids[i] = C.int(it.PID)
+		cgids[i] = C.int(it.CGID)
 		ct := C.CString(it.Title)
 		ca := C.CString(it.AppName)
 		allocs = append(allocs, ct, ca)
@@ -265,10 +270,27 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 
 	C.gwim_overlay_show(
 		(*C.int)(unsafe.Pointer(&pids[0])),
+		(*C.int)(unsafe.Pointer(&cgids[0])),
 		(**C.char)(unsafe.Pointer(&titlePtrs[0])),
 		C.int(n),
 		C.int(selected),
 	)
+}
+
+// ScreenRecordingGranted reports whether the process currently holds the
+// Screen Recording entitlement. Non-prompting; safe to call from a poll
+// loop.
+func ScreenRecordingGranted() bool {
+	return bool(C.gwim_screen_recording_granted())
+}
+
+// RequestScreenRecording triggers the system permission prompt and
+// returns whether access is currently granted. The first call adds GWiM
+// to System Settings → Privacy & Security → Screen Recording; the user
+// still has to flip the switch (and on macOS 14+ relaunch the app) for
+// permission to take effect.
+func RequestScreenRecording() bool {
+	return bool(C.gwim_screen_recording_request())
 }
 
 func updateOverlaySelected(idx int) { C.gwim_overlay_update_selected(C.int(idx)) }

@@ -28,11 +28,13 @@ remote-desktop clients automatically.
   bar.
 - **Alt-Tab window switcher** (`⌥⇥` / `⌥⇧⇥`): per-window MRU switching
   across all running apps. Holding Option opens a centred overlay with
-  app icons; repeated Tab / Shift+Tab cycles the highlight; releasing
-  Option commits and raises the chosen window. Esc cancels. Same chord
-  is also a clickable item in the tray's **Window Switcher** submenu
-  (Return commits, Esc cancels). MVP uses app icons rather than live
-  window thumbnails — see [`ALTTAB.md`](ALTTAB.md).
+  **live window thumbnails** plus an app-icon badge per slot; repeated
+  Tab / Shift+Tab cycles the highlight; releasing Option commits and
+  raises the chosen window. Esc cancels. Thumbnails use ScreenCaptureKit
+  (macOS 14+) and require **Screen Recording** permission — when denied,
+  the overlay degrades gracefully to icon-only. The same chord is also
+  a clickable item in the tray's **Window Switcher** submenu (Return
+  commits, Esc cancels). See [`ALTTAB.md`](ALTTAB.md).
 - **Menu-bar UI**:
   - One-click **Suspend / Activate** toggle.
   - **Shortcuts submenu** listing every action with its keyboard accelerator.
@@ -42,6 +44,10 @@ remote-desktop clients automatically.
     **Accessibility grant state**.
   - Clickable **Accessibility** status row opens
     **System Settings → Privacy & Security → Accessibility** directly.
+  - Clickable **Screen Recording** status row mirrors the AX one —
+    surfaces grant state and triggers the macOS permission prompt /
+    System Settings on click. Required only for live thumbnails in
+    the Alt-Tab switcher; switcher works without it (icon-only mode).
   - **Open at Login** (checkable): when you run from **GWiM.app** on
     **macOS 13 or later**, toggles registration with the system so GWiM
     starts at login (same mechanism as **System Settings → General →
