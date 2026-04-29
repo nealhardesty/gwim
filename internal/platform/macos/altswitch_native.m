@@ -57,6 +57,8 @@ static const CGFloat kGwimSlotW   = 144.0;
 static const CGFloat kGwimSlotH   = 96.0;
 static const CGFloat kGwimSlotPad = 18.0;
 static const CGFloat kGwimTitleH  = 30.0;
+// Scale overlay so it fits within this fraction of the primary screen visibleFrame.
+static const CGFloat kGwimOverlayMaxScreenFraction = 0.9;
 
 @interface GWIMOverlayView : NSView
 @property (nonatomic, strong) NSArray *icons;       // NSImage* or NSNull* (always app icons)
@@ -65,6 +67,8 @@ static const CGFloat kGwimTitleH  = 30.0;
 @property (nonatomic, strong) NSArray *appNames;    // NSString*
 @property (nonatomic) NSInteger selected;
 @property (nonatomic) NSInteger cols;
+/// Uniform scale vs kGwimSlot* base geometry (set in gwim_overlay_show).
+@property (nonatomic) CGFloat layoutScale;
 @end
 
 @implementation GWIMOverlayView
@@ -89,19 +93,23 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
     [[NSColor clearColor] setFill];
     NSRectFill(self.bounds);
 
+    CGFloat sc = self.layoutScale;
+    if (sc < 1e-6) sc = 1.0;
+
     // Background panel — slightly translucent dark.
     [[NSColor colorWithCalibratedWhite:0.10 alpha:0.92] setFill];
+    CGFloat panelR = 18.0 * sc;
     NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:self.bounds
-                                                       xRadius:18 yRadius:18];
+                                                       xRadius:panelR yRadius:panelR];
     [bg fill];
 
     NSInteger n = (NSInteger)[self.icons count];
     if (n == 0) return;
 
-    const CGFloat slotW = kGwimSlotW;
-    const CGFloat slotH = kGwimSlotH;
-    const CGFloat pad   = kGwimSlotPad;
-    const CGFloat titleH = kGwimTitleH;
+    const CGFloat slotW  = kGwimSlotW * sc;
+    const CGFloat slotH  = kGwimSlotH * sc;
+    const CGFloat pad    = kGwimSlotPad * sc;
+    const CGFloat titleH = kGwimTitleH * sc;
 
     NSInteger cols = self.cols > 0 ? self.cols : n;
     if (cols > n) cols = n;
@@ -112,6 +120,17 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
     CGFloat startX = (self.bounds.size.width - gridW) / 2.0;
     CGFloat startY = (self.bounds.size.height + gridH) / 2.0 + titleH / 2.0;
 
+    CGFloat ringOutset = 10.0 * sc;
+    CGFloat ringCorner = 14.0 * sc;
+    CGFloat ringLine   = MAX(1.0, 3.0 * sc);
+    CGFloat thumbInset = 4.0 * sc;
+    CGFloat thumbCorner = 6.0 * sc;
+    CGFloat badge = 28.0 * sc;
+    CGFloat badgeMargin = 6.0 * sc;
+    CGFloat iconSize = 64.0 * sc;
+    CGFloat placeholderR = 10.0 * sc;
+    CGFloat titleFont = MAX(11.0, round(14.0 * sc));
+
     for (NSInteger i = 0; i < n; i++) {
         NSInteger row = i / cols;
         NSInteger col = i % cols;
@@ -120,13 +139,13 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
         NSRect slotRect = NSMakeRect(x, y, slotW, slotH);
 
         if (i == self.selected) {
-            NSRect ring = NSInsetRect(slotRect, -10, -10);
+            NSRect ring = NSInsetRect(slotRect, -ringOutset, -ringOutset);
             [[NSColor colorWithCalibratedWhite:1.0 alpha:0.20] setFill];
             NSBezierPath *r = [NSBezierPath bezierPathWithRoundedRect:ring
-                                                              xRadius:14 yRadius:14];
+                                                              xRadius:ringCorner yRadius:ringCorner];
             [r fill];
             [[NSColor whiteColor] setStroke];
-            [r setLineWidth:3.0];
+            [r setLineWidth:ringLine];
             [r stroke];
         }
 
@@ -139,7 +158,7 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
         if (haveThumb) {
             // Inset slightly so a thumbnail doesn't overlap the selection
             // ring; aspect-fit so window proportions are preserved.
-            NSRect thumbBounds = NSInsetRect(slotRect, 4, 4);
+            NSRect thumbBounds = NSInsetRect(slotRect, thumbInset, thumbInset);
             NSImage *thumb = (NSImage *)thumbObj;
             NSRect drawRect = aspectFitRect([thumb size], thumbBounds);
 
@@ -147,7 +166,7 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
             // less obtrusive when the thumbnail isn't 3:2.
             [[NSColor colorWithCalibratedWhite:0.0 alpha:0.55] setFill];
             NSBezierPath *frame = [NSBezierPath bezierPathWithRoundedRect:thumbBounds
-                                                                  xRadius:6 yRadius:6];
+                                                                  xRadius:thumbCorner yRadius:thumbCorner];
             [frame fill];
 
             [NSGraphicsContext saveGraphicsState];
@@ -160,10 +179,9 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
 
             // App icon badge in the bottom-right corner.
             if (haveIcon) {
-                const CGFloat badge = 28.0;
                 NSRect badgeRect = NSMakeRect(
-                    NSMaxX(slotRect) - badge - 6,
-                    NSMinY(slotRect) + 6,
+                    NSMaxX(slotRect) - badge - badgeMargin,
+                    NSMinY(slotRect) + badgeMargin,
                     badge, badge);
                 [(NSImage *)iconObj drawInRect:badgeRect
                                       fromRect:NSZeroRect
@@ -172,7 +190,6 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
             }
         } else if (haveIcon) {
             // No thumbnail — fall back to the app icon centred large.
-            const CGFloat iconSize = 64.0;
             NSRect iconRect = NSMakeRect(
                 slotRect.origin.x + (slotW - iconSize) / 2.0,
                 slotRect.origin.y + (slotH - iconSize) / 2.0,
@@ -185,7 +202,7 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
             // No icon and no thumbnail — placeholder so the slot is visible.
             [[NSColor colorWithCalibratedWhite:0.4 alpha:1.0] setFill];
             NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:slotRect
-                                                              xRadius:10 yRadius:10];
+                                                              xRadius:placeholderR yRadius:placeholderR];
             [p fill];
         }
     }
@@ -198,7 +215,7 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
             ? [NSString stringWithFormat:@"%@ — %@", a, t]
             : a;
         NSDictionary *attrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:14
+            NSFontAttributeName: [NSFont systemFontOfSize:titleFont
                                                    weight:NSFontWeightMedium],
             NSForegroundColorAttributeName: [NSColor whiteColor],
         };
@@ -304,7 +321,8 @@ static NSArray *gwim_capture_thumbnails(int *cgids, int count) {
 }
 
 // gwim_overlay_show builds (or reuses) the overlay NSWindow and displays
-// it centred on the primary screen.
+// it centred within the primary display's visibleFrame, scaled up to
+// kGwimOverlayMaxScreenFraction of that working area.
 //
 // Parallel arrays:
 //   pids[i]              — owning process pid (used for app icon lookup)
@@ -353,19 +371,25 @@ void gwim_overlay_show(int *pids,
     int cols = count < 6 ? count : 6;
     int rows = (count + cols - 1) / cols;
 
-    const CGFloat slotW = kGwimSlotW;
-    const CGFloat slotH = kGwimSlotH;
-    const CGFloat pad   = kGwimSlotPad;
-    CGFloat width  = pad * 2 + cols * slotW + (cols - 1) * pad + 40.0;
-    CGFloat height = pad * 2 + rows * slotH + (rows - 1) * pad + 50.0;
-    if (width  < 320) width  = 320;
-    if (height < 180) height = 180;
+    const CGFloat baseSlotW = kGwimSlotW;
+    const CGFloat baseSlotH = kGwimSlotH;
+    const CGFloat basePad   = kGwimSlotPad;
+    CGFloat intrinsicW =
+        basePad * 2 + cols * baseSlotW + (cols - 1) * basePad + 40.0;
+    CGFloat intrinsicH =
+        basePad * 2 + rows * baseSlotH + (rows - 1) * basePad + 50.0;
+    if (intrinsicW < 320) intrinsicW = 320;
+    if (intrinsicH < 180) intrinsicH = 180;
 
     NSScreen *primary = [[NSScreen screens] firstObject];
     if (primary == nil) primary = [NSScreen mainScreen];
-    NSRect screen = [primary frame];
-    CGFloat ox = screen.origin.x + (screen.size.width  - width)  / 2.0;
-    CGFloat oy = screen.origin.y + (screen.size.height - height) / 2.0;
+    NSRect vf = [primary visibleFrame];
+    CGFloat s = MIN(kGwimOverlayMaxScreenFraction * vf.size.width / intrinsicW,
+                    kGwimOverlayMaxScreenFraction * vf.size.height / intrinsicH);
+    CGFloat width  = intrinsicW * s;
+    CGFloat height = intrinsicH * s;
+    CGFloat ox = NSMinX(vf) + (NSWidth(vf)  - width)  / 2.0;
+    CGFloat oy = NSMinY(vf) + (NSHeight(vf) - height) / 2.0;
 
     dispatch_block_t block = ^{
         NSRect frame = NSMakeRect(ox, oy, width, height);
@@ -395,12 +419,13 @@ void gwim_overlay_show(int *pids,
             [gOverlayView   setFrameSize:NSMakeSize(width, height)];
         }
 
-        gOverlayView.icons      = icons;
+        gOverlayView.icons = icons;
         gOverlayView.thumbnails = thumbnails;
-        gOverlayView.titles     = titleArr;
-        gOverlayView.appNames   = appArr;
-        gOverlayView.cols       = cols;
-        gOverlayView.selected   = selected;
+        gOverlayView.titles = titleArr;
+        gOverlayView.appNames = appArr;
+        gOverlayView.cols = cols;
+        gOverlayView.selected = selected;
+        gOverlayView.layoutScale = s;
         [gOverlayView setNeedsDisplay:YES];
 
         [gOverlayWindow orderFrontRegardless];

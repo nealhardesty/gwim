@@ -102,13 +102,15 @@ applications). Full requirements live in [`ALTTAB.md`](ALTTAB.md).
 * **Triggers:** `Option+Tab` (forward) / `Option+Shift+Tab` (backward) —
   bound via the same `engine.Shortcut` table that drives the rest of the
   hotkeys.
-* **Overlay:** borderless `NSWindow` centred on the primary display,
-  showing a live window thumbnail per slot (captured via
-  ScreenCaptureKit's `SCScreenshotManager`, macOS 14+) with the
-  application icon as a small badge in the bottom-right corner; falls
-  back to a centred app icon when capture fails (Screen Recording
-  denied, occluded window, owning process gone, etc.). The selected
-  window's full title is shown in a strip below the grid.
+* **Overlay:** borderless `NSWindow` centred in the primary display's
+  **visible** (working) area and scaled so the panel uses up to **90%**
+  of that area's width and height (uniform scale, preserving layout), so
+  thumbnails stay readable on large screens. Shows a live window thumbnail
+  per slot (captured via ScreenCaptureKit's `SCScreenshotManager`, macOS
+  14+) with the application icon as a small badge in the bottom-right
+  corner; falls back to a centred app icon when capture fails (Screen
+  Recording denied, occluded window, owning process gone, etc.). The
+  selected window's full title is shown in a strip below the grid.
 * **Event handling:** while the overlay is open, GWiM installs a
   `CGEventTap` at `kCGSessionEventTap` / `kCGHeadInsertEventTap` that
   intercepts Tab, Shift+Tab, Esc, Return, and the Option flag-changed
@@ -163,15 +165,16 @@ type HotkeyManager interface {
 * **Active App Detection:** Use `NSWorkspace sharedWorkspace frontmostApplication bundleIdentifier` via CGO/Objective-C to fetch the active app identifier for status display in the tray.
 * **Hotkey Management:** Use `NSEvent addGlobalMonitorForEventsMatchingMask` or Carbon's `RegisterEventHotKey`.
 * **Alt-Tab Switcher** (`altswitch_native.m` + `altswitch.go`): borderless
-  `NSWindow` overlay drawn from a custom `NSView`; `CGEventTap` for
-  Tab/Shift+Tab/Esc/Return/Option-release; cross-process AX enumeration
-  via `AXUIElementCreateApplication` + `kAXWindowsAttribute`; window
-  identity via `_AXUIElementGetWindow` (long-stable private API for
-  CGWindowID lookup); raise via `kAXRaiseAction` +
-  `[NSRunningApplication activateWithOptions:]`. Live thumbnails are
-  captured via `SCScreenshotManager.captureImageWithFilter:` (macOS 14+),
-  using `SCShareableContent` once per overlay open to map CGWindowID →
-  `SCWindow`. Screen Recording permission is probed via
+  `NSWindow` overlay drawn from a custom `NSView`; layout scales to fit
+  within 90% of the primary screen `visibleFrame` while keeping a fixed
+  grid design. `CGEventTap` for Tab/Shift+Tab/Esc/Return/Option-release;
+  cross-process AX enumeration via `AXUIElementCreateApplication` +
+  `kAXWindowsAttribute`; window identity via `_AXUIElementGetWindow`
+  (long-stable private API for CGWindowID lookup); raise via
+  `kAXRaiseAction` + `[NSRunningApplication activateWithOptions:]`. Live
+  thumbnails are captured via `SCScreenshotManager.captureImageWithFilter:`
+  (macOS 14+), using `SCShareableContent` once per overlay open to map
+  CGWindowID → `SCWindow`. Screen Recording permission is probed via
   `CGPreflightScreenCaptureAccess` and triggered via
   `CGRequestScreenCaptureAccess`.
 * **Permissions:** Requires **Accessibility** (System Settings → Privacy

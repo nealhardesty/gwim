@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Alt-Tab overlay sizing.** The switcher panel now scales uniformly so
+  it fits within **90%** of the primary display's visible (working) area
+  and is centred there, making thumbnails and chrome easier to see on large
+  monitors. Layout still caps at that fraction when many windows wrap to
+  multiple rows.
+
 - **Removed automatic remote-desktop suspension.** GWiM no longer
   auto-suspends when remote-desktop, VNC, or Screen Sharing apps are
   foreground. Use the menu bar or **`Ctrl+Alt+X`** to suspend or resume

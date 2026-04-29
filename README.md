@@ -24,14 +24,15 @@ them when needed so shortcuts reach another app unchanged (e.g. remote desktop).
 - **Persistent toggle** (`Ctrl+Alt+X`): flips GWiM on/off; works even while
   regular shortcuts are suspended so you can resume without using the menu bar.
 - **Alt-Tab window switcher** (`⌥⇥` / `⌥⇧⇥`): per-window MRU switching
-  across all running apps. Holding Option opens a centred overlay with
-  **live window thumbnails** plus an app-icon badge per slot; repeated
-  Tab / Shift+Tab cycles the highlight; releasing Option commits and
-  raises the chosen window. Esc cancels. Thumbnails use ScreenCaptureKit
-  (macOS 14+) and require **Screen Recording** permission — when denied,
-  the overlay degrades gracefully to icon-only. The same chord is also
-  a clickable item in the tray's **Window Switcher** submenu (Return
-  commits, Esc cancels). See [`ALTTAB.md`](ALTTAB.md).
+  across all running apps. Holding Option opens a centred overlay (scaled
+  to use up to **90%** of the primary display's working area) with **live
+  window thumbnails** plus an app-icon badge per slot; repeated Tab /
+  Shift+Tab cycles the highlight; releasing Option commits and raises the
+  chosen window. Esc cancels. Thumbnails use ScreenCaptureKit (macOS 14+)
+  and require **Screen Recording** permission — when denied, the overlay
+  degrades gracefully to icon-only. The same chord is also a clickable item
+  in the tray's **Window Switcher** submenu (Return commits, Esc cancels).
+  See [`ALTTAB.md`](ALTTAB.md).
 - **Menu-bar UI**:
   - One-click **Suspend / Activate** toggle.
   - **Shortcuts submenu** listing every action with its keyboard accelerator.
