@@ -49,7 +49,7 @@ macOS **Command+Tab** cycles **applications**. Users coming from Windows or Linu
 
 ### 4.2 Visual interface
 
-- **REQ-4.2.1 Layout:** One fixed-design overlay, centered on the **primary display**.
+- **REQ-4.2.1 Layout:** One fixed-design overlay **per connected display** (mirrored content), each centred in that screen’s **visible** (working) area and scaled independently so the panel fits that monitor’s working region (see `DESIGN.md` §3.7 for the scale cap).
 - **REQ-4.2.2 Content:** Show each candidate window with a **live thumbnail** where permitted, plus its **application icon** for quick scanning.
 
 ### 4.3 Menu bar integration

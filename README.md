@@ -24,9 +24,10 @@ them when needed so shortcuts reach another app unchanged (e.g. remote desktop).
 - **Persistent toggle** (`Ctrl+Alt+X`): flips GWiM on/off; works even while
   regular shortcuts are suspended so you can resume without using the menu bar.
 - **Alt-Tab window switcher** (`⌥⇥` / `⌥⇧⇥`): per-window MRU switching
-  across all running apps. Holding Option opens a centred overlay (scaled
-  to use up to **90%** of the primary display's working area) with **live
-  window thumbnails** plus an app-icon badge per slot; repeated Tab /
+  across all running apps. Holding Option opens the same centred overlay on
+  **every connected display** (each scaled to use up to **90%** of that
+  screen's working area) with **live window thumbnails** plus an app-icon
+  badge per slot; repeated Tab /
   Shift+Tab cycles the highlight; releasing Option commits and raises the
   chosen window. Esc cancels. Thumbnails use ScreenCaptureKit (macOS 14+)
   and require **Screen Recording** permission — when denied, the overlay

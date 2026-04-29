@@ -102,11 +102,12 @@ applications). Full requirements live in [`ALTTAB.md`](ALTTAB.md).
 * **Triggers:** `Option+Tab` (forward) / `Option+Shift+Tab` (backward) —
   bound via the same `engine.Shortcut` table that drives the rest of the
   hotkeys.
-* **Overlay:** borderless `NSWindow` centred in the primary display's
-  **visible** (working) area and scaled so the panel uses up to **90%**
-  of that area's width and height (uniform scale, preserving layout), so
-  thumbnails stay readable on large screens. Shows a live window thumbnail
-  per slot (captured via ScreenCaptureKit's `SCScreenshotManager`, macOS
+* **Overlay:** one borderless `NSWindow` per `NSScreen`, each centred in
+  that display's **visible** (working) area and scaled so the panel uses up
+  to **90%** of that area's width and height (uniform scale per monitor,
+  preserving layout), so thumbnails stay readable on large and mixed-size
+  setups; every panel shows the same MRU grid and selection. Each slot shows a live window thumbnail
+  (captured via ScreenCaptureKit's `SCScreenshotManager`, macOS
   14+) with the application icon as a small badge in the bottom-right
   corner; falls back to a centred app icon when capture fails (Screen
   Recording denied, occluded window, owning process gone, etc.). The

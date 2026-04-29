@@ -76,7 +76,7 @@ $(EMBED_ICONS): scripts/gen-icon/main.go
 .PHONY: build
 build: $(BUILD_DIR)/$(BINARY) ## Compile the gwim binary into ./dist
 
-$(BUILD_DIR)/$(BINARY): $(shell find . -name '*.go' -not -path './$(BUILD_DIR)/*' -not -path './scripts/*') $(VERSION_FILE) $(EMBED_ICONS)
+$(BUILD_DIR)/$(BINARY): $(shell find . \( -name '*.go' -o -name '*.m' \) -not -path './$(BUILD_DIR)/*' -not -path './scripts/*') $(VERSION_FILE) $(EMBED_ICONS)
 	@mkdir -p $(BUILD_DIR)
 	@echo "==> Building $(BINARY) $(VERSION)"
 	$(GO) build $(BUILD_FLAGS) -o $@ $(CMD)

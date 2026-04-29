@@ -9,10 +9,12 @@
 //
 // Four responsibilities:
 //
-//  1. Borderless NSWindow overlay drawn from the main thread. Each slot
-//     shows a live window thumbnail (when Screen Recording permission is
-//     granted) plus the application icon as a small badge; falls back to
-//     the app icon alone when capture is unavailable, per ALTTAB §6.
+//  1. Borderless NSWindow overlay(s) on the main thread — one mirrored
+//     panel per NSScreen so the switcher is visible on every display.
+//     Each slot shows a live window thumbnail (when Screen Recording
+//     permission is granted) plus the application icon as a small badge;
+//     falls back to the app icon alone when capture is unavailable, per
+//     ALTTAB §6.
 //
 //  2. CGEventTap installed only while the overlay is open. Captures Tab,
 //     Shift+Tab, Esc, Return, and the Option flag-changed event so the
@@ -229,8 +231,21 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
 
 @end
 
-static NSWindow       *gOverlayWindow = nil;
-static GWIMOverlayView *gOverlayView   = nil;
+static NSMutableArray<NSWindow *>       *gOverlayWindows = nil;
+static NSMutableArray<GWIMOverlayView *> *gOverlayViews   = nil;
+
+static void gwim_configure_overlay_window(NSWindow *win) {
+    [win setOpaque:NO];
+    [win setBackgroundColor:[NSColor clearColor]];
+    [win setLevel:NSStatusWindowLevel];
+    [win setIgnoresMouseEvents:YES];
+    [win setHasShadow:YES];
+    [win setHidesOnDeactivate:NO];
+    [win setCollectionBehavior:
+        NSWindowCollectionBehaviorCanJoinAllSpaces |
+        NSWindowCollectionBehaviorStationary       |
+        NSWindowCollectionBehaviorIgnoresCycle];
+}
 
 // gwim_capture_thumbnails snapshots a batch of windows by CGWindowID
 // using ScreenCaptureKit (macOS 14+). Returns an NSArray of `count`
@@ -320,9 +335,10 @@ static NSArray *gwim_capture_thumbnails(int *cgids, int count) {
     return out;
 }
 
-// gwim_overlay_show builds (or reuses) the overlay NSWindow and displays
-// it centred within the primary display's visibleFrame, scaled up to
-// kGwimOverlayMaxScreenFraction of that working area.
+// gwim_overlay_show builds (or reuses) one borderless NSWindow per
+// connected NSScreen and displays the same content on each, centred in
+// that screen's visibleFrame and scaled up to
+// kGwimOverlayMaxScreenFraction of that working area (per display).
 //
 // Parallel arrays:
 //   pids[i]              — owning process pid (used for app icon lookup)
@@ -381,54 +397,72 @@ void gwim_overlay_show(int *pids,
     if (intrinsicW < 320) intrinsicW = 320;
     if (intrinsicH < 180) intrinsicH = 180;
 
-    NSScreen *primary = [[NSScreen screens] firstObject];
-    if (primary == nil) primary = [NSScreen mainScreen];
-    NSRect vf = [primary visibleFrame];
-    CGFloat s = MIN(kGwimOverlayMaxScreenFraction * vf.size.width / intrinsicW,
-                    kGwimOverlayMaxScreenFraction * vf.size.height / intrinsicH);
-    CGFloat width  = intrinsicW * s;
-    CGFloat height = intrinsicH * s;
-    CGFloat ox = NSMinX(vf) + (NSWidth(vf)  - width)  / 2.0;
-    CGFloat oy = NSMinY(vf) + (NSHeight(vf) - height) / 2.0;
-
     dispatch_block_t block = ^{
-        NSRect frame = NSMakeRect(ox, oy, width, height);
+        NSArray<NSScreen *> *screenList = [NSScreen screens];
+        if (screenList == nil || screenList.count == 0) {
+            NSScreen *ms = [NSScreen mainScreen];
+            screenList = ms ? @[ ms ] : @[];
+        }
+        if (screenList.count == 0) return;
 
-        if (gOverlayWindow == nil) {
-            gOverlayWindow = [[NSWindow alloc]
-                initWithContentRect:frame
+        NSUInteger n = screenList.count;
+
+        if (gOverlayWindows == nil) {
+            gOverlayWindows = [NSMutableArray array];
+            gOverlayViews = [NSMutableArray array];
+        }
+
+        while (gOverlayWindows.count > n) {
+            NSWindow *w = gOverlayWindows.lastObject;
+            [w orderOut:nil];
+            [w close];
+            [gOverlayWindows removeLastObject];
+            [gOverlayViews removeLastObject];
+        }
+
+        while (gOverlayWindows.count < n) {
+            NSRect r = NSMakeRect(0, 0, 320, 240);
+            NSWindow *win = [[NSWindow alloc]
+                initWithContentRect:r
                           styleMask:NSWindowStyleMaskBorderless
                             backing:NSBackingStoreBuffered
                               defer:NO];
-            [gOverlayWindow setOpaque:NO];
-            [gOverlayWindow setBackgroundColor:[NSColor clearColor]];
-            [gOverlayWindow setLevel:NSStatusWindowLevel];
-            [gOverlayWindow setIgnoresMouseEvents:YES];
-            [gOverlayWindow setHasShadow:YES];
-            [gOverlayWindow setHidesOnDeactivate:NO];
-            [gOverlayWindow setCollectionBehavior:
-                NSWindowCollectionBehaviorCanJoinAllSpaces |
-                NSWindowCollectionBehaviorStationary       |
-                NSWindowCollectionBehaviorIgnoresCycle];
-
-            gOverlayView = [[GWIMOverlayView alloc]
-                initWithFrame:NSMakeRect(0, 0, width, height)];
-            [gOverlayWindow setContentView:gOverlayView];
-        } else {
-            [gOverlayWindow setFrame:frame display:NO];
-            [gOverlayView   setFrameSize:NSMakeSize(width, height)];
+            gwim_configure_overlay_window(win);
+            GWIMOverlayView *v =
+                [[GWIMOverlayView alloc] initWithFrame:NSMakeRect(0, 0, 320, 240)];
+            [win setContentView:v];
+            [gOverlayWindows addObject:win];
+            [gOverlayViews addObject:v];
         }
 
-        gOverlayView.icons = icons;
-        gOverlayView.thumbnails = thumbnails;
-        gOverlayView.titles = titleArr;
-        gOverlayView.appNames = appArr;
-        gOverlayView.cols = cols;
-        gOverlayView.selected = selected;
-        gOverlayView.layoutScale = s;
-        [gOverlayView setNeedsDisplay:YES];
+        for (NSUInteger i = 0; i < n; i++) {
+            NSScreen *scr = screenList[i];
+            NSRect vf = [scr visibleFrame];
+            CGFloat s =
+                MIN(kGwimOverlayMaxScreenFraction * vf.size.width / intrinsicW,
+                    kGwimOverlayMaxScreenFraction * vf.size.height / intrinsicH);
+            CGFloat width = intrinsicW * s;
+            CGFloat height = intrinsicH * s;
+            CGFloat ox = NSMinX(vf) + (NSWidth(vf) - width) / 2.0;
+            CGFloat oy = NSMinY(vf) + (NSHeight(vf) - height) / 2.0;
+            NSRect frame = NSMakeRect(ox, oy, width, height);
 
-        [gOverlayWindow orderFrontRegardless];
+            NSWindow *win = gOverlayWindows[i];
+            GWIMOverlayView *view = gOverlayViews[i];
+            [win setFrame:frame display:NO];
+            [view setFrameSize:NSMakeSize(width, height)];
+
+            view.icons = icons;
+            view.thumbnails = thumbnails;
+            view.titles = titleArr;
+            view.appNames = appArr;
+            view.cols = cols;
+            view.selected = selected;
+            view.layoutScale = s;
+            [view setNeedsDisplay:YES];
+
+            [win orderFrontRegardless];
+        }
     };
 
     if ([NSThread isMainThread]) block();
@@ -437,9 +471,11 @@ void gwim_overlay_show(int *pids,
 
 void gwim_overlay_update_selected(int idx) {
     dispatch_block_t block = ^{
-        if (gOverlayView == nil) return;
-        gOverlayView.selected = idx;
-        [gOverlayView setNeedsDisplay:YES];
+        if (gOverlayViews == nil || gOverlayViews.count == 0) return;
+        for (GWIMOverlayView *view in gOverlayViews) {
+            view.selected = idx;
+            [view setNeedsDisplay:YES];
+        }
     };
     if ([NSThread isMainThread]) block();
     else dispatch_async(dispatch_get_main_queue(), block);
@@ -447,8 +483,9 @@ void gwim_overlay_update_selected(int idx) {
 
 void gwim_overlay_hide(void) {
     dispatch_block_t block = ^{
-        if (gOverlayWindow != nil) {
-            [gOverlayWindow orderOut:nil];
+        if (gOverlayWindows == nil) return;
+        for (NSWindow *w in gOverlayWindows) {
+            [w orderOut:nil];
         }
     };
     if ([NSThread isMainThread]) block();

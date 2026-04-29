@@ -8,11 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Alt-Tab overlay sizing.** The switcher panel now scales uniformly so
-  it fits within **90%** of the primary display's visible (working) area
-  and is centred there, making thumbnails and chrome easier to see on large
-  monitors. Layout still caps at that fraction when many windows wrap to
-  multiple rows.
+- **Alt-Tab overlay on all displays.** The switcher opens one mirrored
+  borderless panel per connected `NSScreen`, each centred in that display's
+  visible (working) area and scaled independently up to **90%** of that
+  monitor's width and height (uniform scale, preserving layout when many
+  windows wrap to multiple rows). Mirrored displays still show a single panel.
 
 - **Removed automatic remote-desktop suspension.** GWiM no longer
   auto-suspends when remote-desktop, VNC, or Screen Sharing apps are
@@ -24,9 +24,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Alt-Tab window switcher** (per `ALTTAB.md`). New chord `⌥⇥` / `⌥⇧⇥`
-  opens a borderless overlay centred on the primary display showing
-  every standard window across all running regular apps, MRU-ordered
-  with the currently focused window pinned to position 0. Holding
+  opens mirrored borderless overlays (one per physical display) centred in
+  each screen's working area, showing every standard window across all
+  running regular apps, MRU-ordered with the currently focused window pinned
+  to position 0. Holding
   Option keeps the overlay open; repeated `⇥` / `⇧⇥` advance the
   highlight; releasing Option commits and raises the selected window
   via AX `kAXRaiseAction` + `NSRunningApplication activateWithOptions:`.
@@ -34,8 +35,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   category — clicking from the menu opens the overlay in modal mode
   where `↩` commits and `⎋` cancels. New packages:
   `internal/altswitch` (platform-agnostic MRU stash with race-clean
-  tests) and `internal/platform/macos/altswitch_native.m` (NSWindow
-  overlay + custom NSView, `CGEventTap` for the in-overlay key
+  tests) and `internal/platform/macos/altswitch_native.m` (one `NSWindow` + custom
+  `NSView` per display, `CGEventTap` for the in-overlay key
   handling, AX-driven window enumeration + raise).
 
 - **Live window thumbnails in the switcher.** Each slot now shows a

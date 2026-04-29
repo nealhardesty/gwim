@@ -55,8 +55,8 @@ const (
 
 // switcher implements wm.Switcher. It owns the MRU stash, the open/closed
 // state, and the parallel slices of (display item, MRU key) for the
-// currently-shown overlay. The native overlay window and event tap are
-// managed via the C functions in altswitch_native.m.
+// currently-shown overlay. The native overlay windows (one per display)
+// and event tap are managed via the C functions in altswitch_native.m.
 //
 // Concurrency: open/closed transitions and selected-index mutations all
 // take s.mu. The native event tap callback runs on the main thread and
