@@ -31,7 +31,12 @@ remote-desktop clients automatically.
   - **Shortcuts submenu** listing every action with its keyboard accelerator.
     Clicking any item runs the action on the currently active window — same
     code path as the hotkey, satisfying DRY.
-  - Live status: which app is foreground, whether GWiM is suspended and why.
+  - Live status: foreground app, effective suspend mode, and
+    **Accessibility grant state**.
+  - Clickable **Accessibility** status row opens
+    **System Settings → Privacy & Security → Accessibility** directly.
+  - Hidden **Last action error** row appears automatically if any action
+    fails (for example, if macOS revokes Accessibility permission).
 - **Single binary, ~3 MB**, no runtime dependencies beyond the macOS
   Accessibility API.
 
@@ -78,15 +83,27 @@ On first launch, macOS will prompt for **Accessibility** permission. Grant
 it in **System Settings → Privacy & Security → Accessibility**, then quit
 and relaunch GWiM.
 
+If hotkeys appear to do nothing after a rebuild/install, rebind permission:
+
+1. Remove old `GWiM` entries from Accessibility.
+2. Re-add `/Applications/GWiM.app` and toggle it ON.
+3. Quit and relaunch GWiM.
+
+`make app` now ad-hoc signs the `.app` bundle with a stable identifier so
+TCC permission should persist across future rebuilds.
+
 ## Development
 
 ```bash
 make help                 # list every target
 make build                # binary -> dist/gwim
 make run                  # foreground run with stdout logging
+make run-app              # launch dist/GWiM.app like a real install
 make test                 # tests with -race
 make check                # fmt + vet + test (pre-commit gate)
 make app                  # full .app bundle
+make codesign             # ad-hoc sign dist/GWiM.app (run by make app)
+make install              # install signed app into /Applications
 make icons                # regenerate menu-bar PNGs and .iconset
 ```
 
@@ -119,6 +136,12 @@ assets/Info.plist.template# .app bundle plist (LSUIElement=YES)
   app. The Ctrl+Alt+X toggle is registered as a **persistent** hotkey
   (`HotkeyManager.RegisterPersistent`) so it stays bound at all times
   and gives the user a way back in.
+- **Accessibility health is first-class state**: the engine polls a
+  non-prompting accessibility check and surfaces the result to the tray.
+  Clicking the tray row re-checks immediately and opens System Settings.
+- **Build/install lifecycle is TCC-safe**: `make app` signs the bundle
+  (`make codesign`) so the app has a stable identity (`dev.nealhardesty.gwim`)
+  and macOS Accessibility grants remain valid across rebuilds.
 - **Tray clicks bypass suspension** because they are an explicit user
   request. Hotkeys observe suspension because they are ambiguous intent.
 - **Single-source shortcut table**: `engine.DefaultShortcuts()` powers
