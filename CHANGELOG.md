@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`make release`** — builds the `.app` bundle, zips it with `ditto` to
+  `dist/GWiM-<version>.zip`, then uses `gh` to create the GitHub release
+  `v<version>` (with `--generate-notes`) or, if the release already exists,
+  uploads the zip with `--clobber`. Requires a local `git tag v<version>`
+  (for example after `make push`) and an authenticated `gh` CLI.
+
 ### Changed
 
 - **`go install github.com/nealhardesty/gwim@latest` now works.** Two

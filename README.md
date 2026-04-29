@@ -185,6 +185,12 @@ must go through `make push`, which:
 `make push` is the **only** sanctioned commit/publish path — never invoke
 `git add/commit/push` directly.
 
+After a version tag exists on GitHub, **`make release`** builds the
+`.app`, zips it (`dist/GWiM-<version>.zip`), and uses the
+[GitHub CLI](https://cli.github.com/) (`gh`) to create or update the
+matching GitHub Release for that tag. Run `gh auth login` once per
+machine.
+
 ## Changelog
 
 See [`CHANGELOG.md`](CHANGELOG.md).

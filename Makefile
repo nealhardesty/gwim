@@ -23,6 +23,8 @@ CMD           := .
 BUILD_DIR     := dist
 APP_NAME      := GWiM
 APP_BUNDLE    := $(BUILD_DIR)/$(APP_NAME).app
+# Zip uploaded to GitHub Releases (`make release`); ditto keeps .app bundle metadata intact.
+RELEASE_ZIP   := $(BUILD_DIR)/$(APP_NAME)-$(VERSION).zip
 APP_CONTENTS  := $(APP_BUNDLE)/Contents
 APP_MACOS     := $(APP_CONTENTS)/MacOS
 APP_RES       := $(APP_CONTENTS)/Resources
@@ -240,6 +242,34 @@ push: check ## Bump patch, build, commit, push, tag — full release cycle
 	 git tag "v$$NEW_VERSION"; \
 	 git push origin "v$$NEW_VERSION"; \
 	 echo "==> Released v$$NEW_VERSION"
+
+# Build the signed .app, zip it, and attach to GitHub Releases for tag v$(VERSION).
+# Requires: GitHub CLI (`brew install gh`), `gh auth login`, and git tag v$(VERSION)
+# on this repo (e.g. after `make push`). If the release already exists, re-uploads
+# the zip (--clobber) so you can refresh the asset for the same version.
+.PHONY: release
+release: app ## Zip GWiM.app and create or update GitHub release for current version (needs gh)
+	@command -v gh >/dev/null 2>&1 || { \
+	  echo "ERROR: gh (GitHub CLI) not found. Install: https://cli.github.com/"; exit 1; }
+	@gh auth status >/dev/null 2>&1 || { \
+	  echo "ERROR: gh is not logged in. Run: gh auth login"; exit 1; }
+	@if ! git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null 2>&1; then \
+	  echo "ERROR: git tag v$(VERSION) not found locally."; \
+	  echo "       Create it first (e.g. \`make push\`) or \`git fetch --tags\`."; \
+	  exit 1; \
+	fi
+	@echo "==> Zipping $(APP_BUNDLE) -> $(RELEASE_ZIP)"
+	@rm -f $(RELEASE_ZIP)
+	@ditto -c -k --sequesterRsrc --keepParent $(APP_BUNDLE) $(RELEASE_ZIP)
+	@echo "==> GitHub release v$(VERSION)"
+	@if gh release view "v$(VERSION)" >/dev/null 2>&1; then \
+	  gh release upload "v$(VERSION)" "$(RELEASE_ZIP)" --clobber; \
+	  echo "    Uploaded $(RELEASE_ZIP) to existing release."; \
+	else \
+	  gh release create "v$(VERSION)" "$(RELEASE_ZIP)" \
+	    --title "$(APP_NAME) v$(VERSION)" --generate-notes; \
+	  echo "    Created release with $(RELEASE_ZIP)."; \
+	fi
 
 # ---------------------------------------------------------------------------
 # Convenience
