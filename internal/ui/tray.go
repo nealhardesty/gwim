@@ -7,7 +7,7 @@
 //   - A "Shortcuts" submenu listing every action with its accelerator;
 //     each item is clickable and triggers Engine.Execute, satisfying the
 //     PRD §3.2 requirement that menu items act as remote-control buttons.
-//   - A footer showing the foreground app and permission status rows.
+//   - Permission rows (Accessibility, Screen Recording) before the version footer.
 //   - Optional Open at Login (platform supplies hooks on macOS).
 //   - Quit.
 package ui
@@ -62,8 +62,6 @@ type Tray struct {
 
 	// menu items kept around so we can update labels / checkmarks.
 	mItemSuspend *systray.MenuItem
-	mItemStatus  *systray.MenuItem
-	mItemActive  *systray.MenuItem
 	mItemAccess  *systray.MenuItem
 	mItemScreen  *systray.MenuItem
 	mItemLastErr *systray.MenuItem
@@ -114,22 +112,11 @@ func (t *Tray) build() {
 	systray.SetTooltip(fmt.Sprintf("GWiM %s — Keyboard window manager", t.version))
 
 	t.mItemSuspend = systray.AddMenuItem(t.suspendLabel(true), "Pause / resume hotkey dispatch")
-	t.mItemActive = systray.AddMenuItem("Status: Active", "")
-	t.mItemActive.Disable()
-	t.mItemStatus = systray.AddMenuItem("Foreground: (unknown)", "")
-	t.mItemStatus.Disable()
-	// AX status is clickable — clicking opens System Settings so the
-	// user can fix a denied permission without hunting through menus.
-	t.mItemAccess = systray.AddMenuItem("Accessibility: (checking…)", "Click to open System Settings")
-	// Screen Recording is the optional companion permission — granted
-	// state enables live window thumbnails in the Alt-Tab switcher.
-	t.mItemScreen = systray.AddMenuItem("Screen Recording: (checking…)", "Click to enable live thumbnails in the switcher")
-	t.mItemScreen.Hide() // unhide once we know the state
+	systray.AddSeparator()
+
 	t.mItemLastErr = systray.AddMenuItem("Last action: ok", "")
 	t.mItemLastErr.Disable()
 	t.mItemLastErr.Hide()
-	go t.handleAccessClick()
-	go t.handleScreenClick()
 
 	if t.LaunchAtLogin != nil && t.LaunchAtLogin.Supported != nil && t.LaunchAtLogin.Supported() &&
 		t.LaunchAtLogin.IsOn != nil && t.LaunchAtLogin.Set != nil {
@@ -145,6 +132,16 @@ func (t *Tray) build() {
 	t.buildShortcutsMenu(shortcutsRoot)
 
 	systray.AddSeparator()
+
+	// AX status is clickable — clicking opens System Settings so the
+	// user can fix a denied permission without hunting through menus.
+	t.mItemAccess = systray.AddMenuItem("Accessibility: (checking…)", "Click to open System Settings")
+	// Screen Recording is the optional companion permission — granted
+	// state enables live window thumbnails in the Alt-Tab switcher.
+	t.mItemScreen = systray.AddMenuItem("Screen Recording: (checking…)", "Click to enable live thumbnails in the switcher")
+	t.mItemScreen.Hide() // unhide once we know the state
+	go t.handleAccessClick()
+	go t.handleScreenClick()
 
 	versionItem := systray.AddMenuItem("GWiM "+t.version, "")
 	versionItem.Disable()
@@ -319,31 +316,14 @@ func (t *Tray) handleLaunchAtLogin() {
 	}
 }
 
-// refresh updates icon, status text, and toggle label to match state.
-//
-// Status text reflects manual suspend vs active (including after-toggle
-// “forced on”), plus the foreground app for context.
+// refresh updates icon, suspend/activate label, and permission rows to match state.
 func (t *Tray) refresh(s engine.SuspensionState) {
 	if s.Active() {
 		systray.SetIcon(icon.Active())
 		t.mItemSuspend.SetTitle(t.suspendLabel(true))
-		switch s.UserMode {
-		case engine.UserModeForceActive:
-			t.mItemActive.SetTitle("Status: Active (forced on)")
-		default:
-			t.mItemActive.SetTitle("Status: Active")
-		}
 	} else {
 		systray.SetIcon(icon.Suspended())
 		t.mItemSuspend.SetTitle(t.suspendLabel(false))
-		t.mItemActive.SetTitle("Status: Suspended")
-	}
-
-	switch {
-	case s.ActiveAppID == "":
-		t.mItemStatus.SetTitle("Foreground: (unknown)")
-	default:
-		t.mItemStatus.SetTitle(fmt.Sprintf("Foreground: %s", s.ActiveAppID))
 	}
 
 	// Accessibility row — the headline diagnostic. Without AX permission
