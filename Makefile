@@ -181,7 +181,10 @@ install: app ## Copy GWiM.app to /Applications, killing any running instance
 	@echo "  2. Remove any old GWiM entry (-)"
 	@echo "  3. Re-add /Applications/GWiM.app and toggle ON"
 	@echo "  4. Quit & relaunch GWiM"
-	@echo "(Required only the FIRST time after switching to ad-hoc signing.)"
+
+open: install ## Open the installed app
+	open -a /Applications/$(APP_NAME).app
+
 
 .PHONY: clean
 clean: ## Remove build artifacts (binary, .app, multi-resolution iconset)
