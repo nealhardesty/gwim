@@ -8,6 +8,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`make release` now bundles BOTH platforms.** The release target now
+  depends on `app` *and* `build-windows`, so a single invocation
+  produces the macOS `.app` zip (`dist/GWiM-<version>.zip`) **and** a
+  versioned Windows binary (`dist/gwim-<version>.exe`), then attaches
+  both as assets to the GitHub Release for `v<version>`. Previously the
+  target only shipped the macOS `.app`. Also fixed a pre-existing
+  Makefile bug where `RELEASE_ZIP := …$(VERSION)…` was defined before
+  `VERSION` was set, causing the asset to be uploaded as
+  `GWiM-.zip` (empty version segment); the artifact variables now sit
+  after `VERSION` so `:=` immediate expansion picks up the resolved
+  value.
+
 - **Alt-Tab switcher now lists every standard window**, including
   **minimised windows** (previously skipped as an MVP punt) and the
   windows of **hidden (Cmd+H) apps**. Slots for those windows are drawn

@@ -296,11 +296,20 @@ must go through `make push`, which:
 `make push` is the **only** sanctioned commit/publish path — never invoke
 `git add/commit/push` directly.
 
-After a version tag exists on GitHub, **`make release`** builds the
-`.app`, zips it (`dist/GWiM-<version>.zip`), and uses the
-[GitHub CLI](https://cli.github.com/) (`gh`) to create or update the
-matching GitHub Release for that tag. Run `gh auth login` once per
-machine.
+After a version tag exists on GitHub, **`make release`** bundles BOTH
+platforms in one shot:
+
+- Builds the macOS `.app`, zips it with `ditto` to
+  `dist/GWiM-<version>.zip`.
+- Cross-builds the Windows binary (`CGO_ENABLED=0`,
+  `GOOS=windows GOARCH=amd64`) and copies it to a versioned
+  `dist/gwim-<version>.exe`.
+- Uses the [GitHub CLI](https://cli.github.com/) (`gh`) to create the
+  matching GitHub Release for that tag — or upload-with-`--clobber` if
+  the release already exists — attaching both assets.
+
+Run `gh auth login` once per machine. The tag must already exist
+locally (e.g. via `make push`).
 
 ## Changelog
 
