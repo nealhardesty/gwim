@@ -30,15 +30,16 @@ shortcuts reach another app unchanged (e.g. remote desktop).
   **every connected display** (each scaled to use up to **90%** of that
   screen's working area) with **live window thumbnails** plus an app-icon
   badge per slot; repeated Tab /
-  Shift+Tab cycles the highlight; releasing Option commits and raises the
-  chosen window. Esc cancels. **Minimised windows and the windows of
+  Shift+Tab cycles the highlight; **clicking a slot** commits and raises
+  that window immediately. Releasing Option commits and raises the
+  keyboard-highlighted window. Esc cancels. **Minimised windows and the windows of
   hidden apps (Cmd+H) are included** and rendered at reduced opacity so
   they're easy to recognise at a glance; committing to one un-hides the
   app and un-minimises the window automatically. Thumbnails use
   ScreenCaptureKit (macOS 14+) and require **Screen Recording**
   permission — when denied, the overlay degrades gracefully to
   icon-only. The same chord is also a clickable item in the tray's
-  **Window Switcher** submenu (Return commits, Esc cancels). See
+  **Window Switcher** submenu (Return or **click a slot** commits, Esc cancels). See
   [`ALTTAB.md`](ALTTAB.md).
 - **Menu-bar UI**:
   - One-click **Suspend / Activate** toggle.
@@ -116,7 +117,7 @@ The window switcher uses its own chord (no `⌃` modifier):
 | Open switcher (forward)         | `⌥⇥`             |
 | Open switcher (backward)        | `⌥⇧⇥`            |
 | Advance highlight while open    | `⇥` / `⇧⇥`       |
-| Commit selection                | release `⌥`, or `↩` (when opened from the tray) |
+| Commit selection                | release `⌥`, click a slot, or `↩` (when opened from the tray) |
 | Cancel                          | `⎋`              |
 
 | Verb                     | Modifiers           | Keys                  |

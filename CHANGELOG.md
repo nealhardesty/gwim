@@ -36,6 +36,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Alt-Tab: click a thumbnail or icon slot** to commit and jump to that
+  window immediately (same as focusing it with Tab and pressing Return).
+  Works in hold-Option mode and when the overlay is opened from the tray.
+
 - **Windows port** (`internal/platform/windows/`). GWiM now runs on
   Windows 10 / 11 with full feature parity except the Alt-Tab switcher
   (Windows already has its own Alt+Tab). Pure-Go `syscall` bindings to

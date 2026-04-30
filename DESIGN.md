@@ -124,14 +124,16 @@ applications). Full requirements live in [`ALTTAB.md`](ALTTAB.md).
   `CGEventTap` at `kCGSessionEventTap` / `kCGHeadInsertEventTap` that
   intercepts Tab, Shift+Tab, Esc, Return, and the Option flag-changed
   event. The tap is removed on commit/cancel so it never sees user input
-  outside an active switch.
+  outside an active switch. The overlay `NSWindow` does not ignore mouse
+  events; a click inside a slot rectangle commits that window (same as
+  Return on the current highlight).
 * **MRU bookkeeping:** `internal/altswitch/Stash` keeps the per-window
   MRU history; the currently focused window pins to position 0 so the
   default highlight is the second entry, matching familiar Alt-Tab.
 * **Tray integration:** the same actions appear in a "Window Switcher"
   category in the Shortcuts submenu. Clicking opens the overlay in
-  *modal mode* (`Return` commits, `Esc` cancels) since no Option key is
-  held when invoked from the menu.
+  *modal mode* (`Return` commits, `Esc` cancels, or click a slot to pick a
+  window) since no Option key is held when invoked from the menu.
 
 ---
 
@@ -177,6 +179,7 @@ type HotkeyManager interface {
   `NSWindow` overlay drawn from a custom `NSView`; layout scales to fit
   within 90% of the primary screen `visibleFrame` while keeping a fixed
   grid design. `CGEventTap` for Tab/Shift+Tab/Esc/Return/Option-release;
+  slot hit-testing on `mouseUp:` for click-to-commit;
   cross-process AX enumeration via `AXUIElementCreateApplication` +
   `kAXWindowsAttribute`; window identity via `_AXUIElementGetWindow`
   (long-stable private API for CGWindowID lookup); raise via

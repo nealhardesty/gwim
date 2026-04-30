@@ -18,7 +18,8 @@
 //
 //  2. CGEventTap installed only while the overlay is open. Captures Tab,
 //     Shift+Tab, Esc, Return, and the Option flag-changed event so the
-//     Go controller can advance / commit / cancel.
+//     Go controller can advance / commit / cancel. Overlay windows accept
+//     mouse events; clicking a slot commits like Return.
 //
 //  3. AX-driven enumeration and raise. Uses _AXUIElementGetWindow (a
 //     long-stable private API used by Hammerspoon, Yabai, Rectangle, etc.)
@@ -42,6 +43,7 @@
 // Forward declaration of the Go callback. cgo synthesises this symbol
 // from gwimAltswitchEvent's //export directive in altswitch.go.
 extern void gwimAltswitchEvent(int kind, int keycode, int optionDown, int shiftDown);
+extern void gwimAltswitchSlotClicked(int idx);
 
 // Private API: maps an AXUIElementRef back to its CGWindowID. Stable
 // since Snow Leopard; widely used by open-source window managers.
@@ -62,6 +64,29 @@ static const CGFloat kGwimSlotPad = 18.0;
 static const CGFloat kGwimTitleH  = 30.0;
 // Scale overlay so it fits within this fraction of the primary screen visibleFrame.
 static const CGFloat kGwimOverlayMaxScreenFraction = 0.9;
+
+/// Slot rectangle for index `i`; must match drawRect: grid math (hit testing + paint).
+static NSRect gwim_overlay_slot_rect(NSRect viewBounds, NSInteger i, NSInteger n,
+                                       NSInteger cols, CGFloat layoutScale) {
+    CGFloat sc = layoutScale;
+    if (sc < 1e-6) sc = 1.0;
+    const CGFloat slotW  = kGwimSlotW * sc;
+    const CGFloat slotH  = kGwimSlotH * sc;
+    const CGFloat pad    = kGwimSlotPad * sc;
+    const CGFloat titleH = kGwimTitleH * sc;
+    NSInteger useCols = cols > 0 ? cols : n;
+    if (useCols > n) useCols = n;
+    NSInteger rows = (n + useCols - 1) / useCols;
+    CGFloat gridW = useCols * slotW + (useCols - 1) * pad;
+    CGFloat gridH = rows * slotH + (rows - 1) * pad;
+    CGFloat startX = (viewBounds.size.width - gridW) / 2.0;
+    CGFloat startY = (viewBounds.size.height + gridH) / 2.0 + titleH / 2.0;
+    NSInteger row = i / useCols;
+    NSInteger col = i % useCols;
+    CGFloat x = startX + col * (slotW + pad);
+    CGFloat y = startY - (row + 1) * slotH - row * pad;
+    return NSMakeRect(x, y, slotW, slotH);
+}
 
 @interface GWIMOverlayView : NSView
 @property (nonatomic, strong) NSArray *icons;       // NSImage* or NSNull* (always app icons)
@@ -119,12 +144,6 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
 
     NSInteger cols = self.cols > 0 ? self.cols : n;
     if (cols > n) cols = n;
-    NSInteger rows = (n + cols - 1) / cols;
-
-    CGFloat gridW = cols * slotW + (cols - 1) * pad;
-    CGFloat gridH = rows * slotH + (rows - 1) * pad;
-    CGFloat startX = (self.bounds.size.width - gridW) / 2.0;
-    CGFloat startY = (self.bounds.size.height + gridH) / 2.0 + titleH / 2.0;
 
     CGFloat ringOutset = 10.0 * sc;
     CGFloat ringCorner = 14.0 * sc;
@@ -138,11 +157,7 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
     CGFloat titleFont = MAX(11.0, round(14.0 * sc));
 
     for (NSInteger i = 0; i < n; i++) {
-        NSInteger row = i / cols;
-        NSInteger col = i % cols;
-        CGFloat x = startX + col * (slotW + pad);
-        CGFloat y = startY - (row + 1) * slotH - row * pad;
-        NSRect slotRect = NSMakeRect(x, y, slotW, slotH);
+        NSRect slotRect = gwim_overlay_slot_rect(self.bounds, i, n, cols, sc);
 
         if (i == self.selected) {
             NSRect ring = NSInsetRect(slotRect, -ringOutset, -ringOutset);
@@ -242,6 +257,21 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
     }
 }
 
+- (void)mouseUp:(NSEvent *)event {
+    NSInteger n = (NSInteger)[self.icons count];
+    if (n == 0) return;
+    NSInteger cols = self.cols > 0 ? self.cols : n;
+    if (cols > n) cols = n;
+    NSPoint p = [self convertPoint:[event locationInWindow] fromView:nil];
+    CGFloat sc = self.layoutScale;
+    for (NSInteger i = 0; i < n; i++) {
+        if (NSPointInRect(p, gwim_overlay_slot_rect(self.bounds, i, n, cols, sc))) {
+            gwimAltswitchSlotClicked((int)i);
+            return;
+        }
+    }
+}
+
 @end
 
 static NSMutableArray<NSWindow *>       *gOverlayWindows = nil;
@@ -251,7 +281,7 @@ static void gwim_configure_overlay_window(NSWindow *win) {
     [win setOpaque:NO];
     [win setBackgroundColor:[NSColor clearColor]];
     [win setLevel:NSStatusWindowLevel];
-    [win setIgnoresMouseEvents:YES];
+    [win setIgnoresMouseEvents:NO];
     [win setHasShadow:YES];
     [win setHidesOnDeactivate:NO];
     [win setCollectionBehavior:

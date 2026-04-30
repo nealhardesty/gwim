@@ -379,3 +379,23 @@ func gwimAltswitchEvent(kind, keycode, optionDown, shiftDown C.int) {
 		}
 	}
 }
+
+// gwimAltswitchSlotClicked is invoked from GWIMOverlayView mouseUp: when
+// the user clicks a slot (main thread). Sets selection and commits like Return.
+//
+//export gwimAltswitchSlotClicked
+func gwimAltswitchSlotClicked(idx C.int) {
+	s := getActive()
+	if s == nil {
+		return
+	}
+	i := int(idx)
+	s.mu.Lock()
+	if !s.open || i < 0 || i >= len(s.items) {
+		s.mu.Unlock()
+		return
+	}
+	s.selected = i
+	s.mu.Unlock()
+	go s.commit()
+}
