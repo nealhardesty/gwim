@@ -112,14 +112,32 @@ applications). Full requirements live in [`ALTTAB.md`](ALTTAB.md).
   corner; falls back to a centred app icon when capture fails (Screen
   Recording denied, occluded window, owning process gone, etc.). The
   selected window's full title is shown in a strip below the grid.
-* **Coverage:** every standard window of every regular app is enumerated,
+* **Coverage:** every standard window of every regular app is enumerated
+  **across every macOS Space** (not just the currently-visible Space),
   **including minimised windows and the windows of hidden (Cmd+H) apps**.
-  These slots are drawn at reduced opacity so they're recognisable at a
-  glance; committing to one un-hides the owning app and un-minimises
-  the window before raising. For hidden apps where AX returns no
-  windows yet, the enumerator falls back to
-  `CGWindowListCopyWindowInfo` so the windows still appear in the
-  switcher.
+  Primary enumeration uses
+  `CGWindowListCopyWindowInfo(kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements, …)`
+  filtered by layer 0 + sane bounds + regular owner; AX is consulted
+  per-pid as an enrichment layer for `kAXSubroleAttribute` (drop
+  non-`AXStandardWindow` entries when AX has them), minimised state,
+  and titles. The CGWindowList path is the source of truth because
+  Accessibility unreliably omits windows on other Spaces — especially
+  native-fullscreen Spaces. Minimised / hidden slots are drawn at
+  reduced opacity so they're recognisable at a glance; committing to
+  one un-hides the owning app and un-minimises the window before
+  raising.
+* **Per-Space grouping:** slots are grouped by the macOS Space they
+  live on. Each group gets a small label header (e.g. `D1·S2`,
+  `Space 1 · current`, `Sticky`, `D1·S2 · FS` for fullscreen Spaces)
+  and a thin divider between groups. Group ordering: focused window's
+  Space first, then the current Space on every other display, then
+  non-current Spaces in (display, space) order, with sticky
+  (all-Spaces) windows in a trailing section so they aren't repeated.
+  Within each group MRU order is preserved. Space metadata comes from
+  the private but long-stable CGS APIs (`CGSCopySpacesForWindows`,
+  `CGSCopyManagedDisplaySpaces`) used by Yabai / Hammerspoon /
+  AltTab.app; if those calls fail the overlay degrades to a single
+  un-grouped section.
 * **Event handling:** while the overlay is open, GWiM installs a
   `CGEventTap` at `kCGSessionEventTap` / `kCGHeadInsertEventTap` that
   intercepts Tab, Shift+Tab, Esc, Return, and the Option flag-changed
@@ -176,16 +194,24 @@ type HotkeyManager interface {
 * **Active App Detection:** Use `NSWorkspace sharedWorkspace frontmostApplication bundleIdentifier` via CGO/Objective-C to fetch the active app identifier for status display in the tray.
 * **Hotkey Management:** Use `NSEvent addGlobalMonitorForEventsMatchingMask` or Carbon's `RegisterEventHotKey`.
 * **Alt-Tab Switcher** (`altswitch_native.m` + `altswitch.go`): borderless
-  `NSWindow` overlay drawn from a custom `NSView`; layout scales to fit
-  within 90% of the primary screen `visibleFrame` while keeping a fixed
-  grid design. `CGEventTap` for Tab/Shift+Tab/Esc/Return/Option-release;
-  slot hit-testing on `mouseUp:` for click-to-commit;
-  cross-process AX enumeration via `AXUIElementCreateApplication` +
-  `kAXWindowsAttribute`; window identity via `_AXUIElementGetWindow`
-  (long-stable private API for CGWindowID lookup); raise via
-  `kAXRaiseAction` + `[NSRunningApplication activateWithOptions:]`. Live
-  thumbnails are captured via `SCScreenshotManager.captureImageWithFilter:`
-  (macOS 14+), using `SCShareableContent` once per overlay open to map
+  `NSWindow` overlay drawn from a custom `NSView`; the layout walks
+  the slot list group-by-group, emitting a header label + wrapping
+  rows + thin divider per group, then scales the whole panel to fit
+  within 90% of each connected display's `visibleFrame`.
+  `CGEventTap` for Tab/Shift+Tab/Esc/Return/Option-release; per-slot
+  rectangles are precomputed in `gwim_compute_layout` and reused for
+  both painting and `mouseUp:` hit testing, so click-to-commit and
+  selection geometry never drift apart. Window enumeration is driven
+  by `CGWindowListCopyWindowInfo` (covers every Space) and enriched
+  per-pid via `AXUIElementCreateApplication` + `kAXWindowsAttribute`;
+  window identity comes from `_AXUIElementGetWindow` (long-stable
+  private API for CGWindowID lookup); Space metadata comes from the
+  private but long-stable CGS APIs `CGSCopySpacesForWindows`,
+  `CGSCopyManagedDisplaySpaces`, and `CGSGetActiveSpace`. Raise is
+  via `kAXRaiseAction` + `[NSRunningApplication activateWithOptions:]`.
+  Live thumbnails are captured via
+  `SCScreenshotManager.captureImageWithFilter:` (macOS 14+), using
+  `SCShareableContent` once per overlay open to map
   CGWindowID → `SCWindow`. Screen Recording permission is probed via
   `CGPreflightScreenCaptureAccess` and triggered via
   `CGRequestScreenCaptureAccess`.

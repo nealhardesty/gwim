@@ -72,13 +72,27 @@ type WindowManager interface {
 // the overlay to dim the slot so users can still distinguish those
 // windows; the platform's raise path un-minimises and un-hides on
 // commit.
+//
+// SpaceID identifies the macOS Space (virtual desktop) the window lives
+// on, populated via the private but long-stable CGS APIs. Sticky is
+// true when the window appears on every Space (CanJoinAllSpaces).
+// SpaceLabel is a human-readable group label such as "D1·S2", "Sticky",
+// or "Space 1 · current"; the overlay uses it as a section heading and
+// to detect group transitions. GroupRank orders the visual sections —
+// lower values appear earlier; the focused window's space is rank 0
+// and sticky windows sort last. All four fields are populated on macOS;
+// other platforms may leave them at their zero values.
 type WindowInfo struct {
-	PID       int32
-	CGID      uint32
-	Title     string
-	AppName   string
-	Minimized bool
-	Hidden    bool
+	PID        int32
+	CGID       uint32
+	Title      string
+	AppName    string
+	Minimized  bool
+	Hidden     bool
+	SpaceID    uint64
+	GroupRank  int32
+	Sticky     bool
+	SpaceLabel string
 }
 
 // Switcher drives the Alt-Tab keyboard window switcher (per ALTTAB.md).

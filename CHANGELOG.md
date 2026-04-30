@@ -8,10 +8,39 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Alt-Tab switcher now covers every macOS Space**, not just the
+  currently-visible Space on each display. The previous implementation
+  treated `kAXWindowsAttribute` as the source of truth, which silently
+  drops windows on other Spaces — particularly native-fullscreen
+  Spaces — because Accessibility unreliably enumerates them. The
+  enumerator now uses
+  `CGWindowListCopyWindowInfo(kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements, …)`
+  as the primary list and consults AX only as an enrichment layer for
+  subrole filtering, minimised state, and titles. As a result,
+  fullscreen / off-screen / different-Space windows finally appear in
+  the overlay alongside the on-screen ones.
+
 - **Tray Screen Recording row** no longer runs the macOS permission dialog
   and opens **System Settings → Screen Recording** on the same click.
   The first click triggers `CGRequestScreenCaptureAccess` only; a second
   click opens the Settings pane (matches the documented intent).
+
+### Added
+
+- **Alt-Tab overlay groups slots by macOS Space** with a small
+  per-group label header (`D1·S2`, `Space 1 · current`, `Sticky`, …)
+  and a thin divider between groups. Group ordering puts the focused
+  window's Space first, then the current Space on every other display,
+  then non-current Spaces, with sticky (all-Space) windows in their own
+  trailing section so they aren't repeated. Within each group, MRU
+  ordering is preserved so default selection still lands on "next most
+  recently used" — matching familiar Alt-Tab semantics. Implementation
+  uses the long-stable private CGS APIs (`CGSCopySpacesForWindows`,
+  `CGSCopyManagedDisplaySpaces`) used by every comparable open-source
+  switcher; if those calls fail on a future macOS, the overlay
+  degrades to a single un-grouped section. New `wm.WindowInfo` fields
+  (`SpaceID`, `GroupRank`, `Sticky`, `SpaceLabel`) and a new
+  `internal/altswitch.GroupOrder` helper plumb the metadata through.
 
 ### Changed
 

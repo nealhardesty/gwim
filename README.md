@@ -26,21 +26,27 @@ shortcuts reach another app unchanged (e.g. remote desktop).
 - **Persistent toggle** (`Ctrl+Alt+X`): flips GWiM on/off; works even while
   regular shortcuts are suspended so you can resume without using the menu bar.
 - **Alt-Tab window switcher** (`⌥⇥` / `⌥⇧⇥`): per-window MRU switching
-  across all running apps. Holding Option opens the same centred overlay on
-  **every connected display** (each scaled to use up to **90%** of that
-  screen's working area) with **live window thumbnails** plus an app-icon
-  badge per slot; repeated Tab /
-  Shift+Tab cycles the highlight; **clicking a slot** commits and raises
-  that window immediately. Releasing Option commits and raises the
-  keyboard-highlighted window. Esc cancels. **Minimised windows and the windows of
-  hidden apps (Cmd+H) are included** and rendered at reduced opacity so
-  they're easy to recognise at a glance; committing to one un-hides the
-  app and un-minimises the window automatically. Thumbnails use
+  across all running apps **and every macOS Space** — windows on other
+  Spaces, including native-fullscreen Spaces, now show up alongside
+  the windows on the currently-visible Space. Holding Option opens the
+  same centred overlay on **every connected display** (each scaled to
+  use up to **90%** of that screen's working area) with **live window
+  thumbnails** plus an app-icon badge per slot. Slots are **grouped by
+  Space**, with a small header label per group (`D1·S2`,
+  `Space 1 · current`, `Sticky`, …) and a thin divider between groups;
+  the focused window's Space leads, sticky (all-Space) windows trail.
+  Repeated Tab / Shift+Tab cycles the highlight across all groups;
+  **clicking a slot** commits and raises that window immediately.
+  Releasing Option commits and raises the keyboard-highlighted window.
+  Esc cancels. **Minimised windows and the windows of hidden apps
+  (Cmd+H) are included** and rendered at reduced opacity so they're
+  easy to recognise at a glance; committing to one un-hides the app
+  and un-minimises the window automatically. Thumbnails use
   ScreenCaptureKit (macOS 14+) and require **Screen Recording**
   permission — when denied, the overlay degrades gracefully to
   icon-only. The same chord is also a clickable item in the tray's
-  **Window Switcher** submenu (Return or **click a slot** commits, Esc cancels). See
-  [`ALTTAB.md`](ALTTAB.md).
+  **Window Switcher** submenu (Return or **click a slot** commits, Esc
+  cancels).
 - **Menu-bar UI**:
   - One-click **Suspend / Activate** toggle.
   - **Shortcuts submenu** listing every action with its keyboard accelerator.
@@ -246,7 +252,7 @@ main.go, main_darwin.go,  # entrypoint + per-OS bootstrap (lives at module root
 main_windows.go,          # so `go install github.com/nealhardesty/gwim@latest` works)
 version.go
 internal/wm/              # platform-agnostic interfaces (Window, WindowManager, HotkeyManager, Switcher)
-internal/altswitch/       # MRU stash for the Alt-Tab switcher (macOS-only feature; platform-agnostic logic)
+internal/altswitch/       # MRU stash + per-Space group sort for the Alt-Tab switcher (macOS-only feature; platform-agnostic logic)
 internal/platform/macos/  # cgo bridge: AXUIElement, NSWorkspace, Carbon hotkeys, CGEventTap, NSWindow overlay
 internal/platform/windows/# pure-Go Win32 bindings: SetWindowPos, RegisterHotKey + WM_HOTKEY pump, registry login
 internal/engine/          # action table, layout math, suspension dispatcher

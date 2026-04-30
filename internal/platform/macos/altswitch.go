@@ -16,6 +16,10 @@ typedef struct {
     char    *app_name;
     bool     minimized;
     bool     hidden;
+    uint64_t space_id;
+    int32_t  group_rank;
+    bool     sticky;
+    char    *space_label;
 } gwim_window_entry;
 
 extern int  gwim_enumerate_windows(gwim_window_entry *out_arr, int max,
@@ -26,6 +30,7 @@ extern bool gwim_raise_window(pid_t pid, uint32_t cgid);
 
 extern void gwim_overlay_show(int *pids, int *cgids, int *dimmed_flags,
                                const char **titles_and_apps,
+                               const char **group_labels,
                                int count, int selected);
 extern void gwim_overlay_update_selected(int idx);
 extern void gwim_overlay_hide(void);
@@ -105,35 +110,51 @@ func (s *switcher) openOrAdvance(forward bool) {
 		return
 	}
 
+	// 1) MRU permutation — pins focused window to slot 0, then orders by
+	// recency.
 	perm := s.stash.Order(keys, focused)
-	orderedItems := make([]wm.WindowInfo, len(perm))
-	orderedKeys := make([]altswitch.Key, len(perm))
+	mruItems := make([]wm.WindowInfo, len(perm))
+	mruKeys := make([]altswitch.Key, len(perm))
 	for i, p := range perm {
-		orderedItems[i] = items[p]
-		orderedKeys[i] = keys[p]
+		mruItems[i] = items[p]
+		mruKeys[i] = keys[p]
 	}
 
-	sel := 0
-	if len(orderedItems) >= 2 {
+	mruSel := 0
+	if len(mruItems) >= 2 {
 		if forward {
-			sel = 1
+			mruSel = 1
 		} else {
-			sel = len(orderedItems) - 1
+			mruSel = len(mruItems) - 1
+		}
+	}
+
+	// 2) Stable group sort — keep MRU order within each group, but sort
+	// groups so the focused space appears first and sticky windows last.
+	groupPerm := altswitch.GroupOrder(mruItems)
+	finalItems := make([]wm.WindowInfo, len(groupPerm))
+	finalKeys := make([]altswitch.Key, len(groupPerm))
+	sel := 0
+	for newIdx, oldIdx := range groupPerm {
+		finalItems[newIdx] = mruItems[oldIdx]
+		finalKeys[newIdx] = mruKeys[oldIdx]
+		if oldIdx == mruSel {
+			sel = newIdx
 		}
 	}
 
 	holdMode := bool(C.gwim_option_currently_down())
 
 	s.mu.Lock()
-	s.items = orderedItems
-	s.keys = orderedKeys
+	s.items = finalItems
+	s.keys = finalKeys
 	s.selected = sel
 	s.holdMode = holdMode
 	s.open = true
 	s.mu.Unlock()
 
 	setActive(s)
-	showOverlay(orderedItems, sel)
+	showOverlay(finalItems, sel)
 
 	if !installEventTap() {
 		log.Printf("altswitch: failed to install event tap (Accessibility denied?)")
@@ -235,12 +256,18 @@ func enumerateWindows() ([]wm.WindowInfo, []altswitch.Key, altswitch.Key) {
 			CGID:      uint32(e.cgid),
 			Minimized: bool(e.minimized),
 			Hidden:    bool(e.hidden),
+			SpaceID:   uint64(e.space_id),
+			GroupRank: int32(e.group_rank),
+			Sticky:    bool(e.sticky),
 		}
 		if e.title != nil {
 			info.Title = C.GoString(e.title)
 		}
 		if e.app_name != nil {
 			info.AppName = C.GoString(e.app_name)
+		}
+		if e.space_label != nil {
+			info.SpaceLabel = C.GoString(e.space_label)
 		}
 		items[i] = info
 		keys[i] = altswitch.Key{PID: info.PID, CGID: info.CGID}
@@ -257,7 +284,8 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 	cgids := make([]C.int, n)
 	dimmed := make([]C.int, n)
 	titlePtrs := make([]*C.char, n*2)
-	allocs := make([]*C.char, 0, n*2)
+	labelPtrs := make([]*C.char, n)
+	allocs := make([]*C.char, 0, n*3)
 	defer func() {
 		for _, p := range allocs {
 			C.free(unsafe.Pointer(p))
@@ -272,9 +300,11 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 		}
 		ct := C.CString(it.Title)
 		ca := C.CString(it.AppName)
-		allocs = append(allocs, ct, ca)
+		cl := C.CString(it.SpaceLabel)
+		allocs = append(allocs, ct, ca, cl)
 		titlePtrs[i*2] = ct
 		titlePtrs[i*2+1] = ca
+		labelPtrs[i] = cl
 	}
 
 	C.gwim_overlay_show(
@@ -282,6 +312,7 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 		(*C.int)(unsafe.Pointer(&cgids[0])),
 		(*C.int)(unsafe.Pointer(&dimmed[0])),
 		(**C.char)(unsafe.Pointer(&titlePtrs[0])),
+		(**C.char)(unsafe.Pointer(&labelPtrs[0])),
 		C.int(n),
 		C.int(selected),
 	)
