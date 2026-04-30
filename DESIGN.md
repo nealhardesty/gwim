@@ -191,6 +191,39 @@ type HotkeyManager interface {
 
 ### 4.3. macOS Implementation (`internal/platform/macos/`)
 * **Window Management:** Implement via macOS Accessibility API (`AXUIElement`) and `CGO` using `<ApplicationServices/ApplicationServices.h>`.
+* **Chromium / Electron compatibility:** Chrome, Slack, Edge, Brave,
+  VS Code, Discord, and similar apps need three distinct AX
+  workarounds GWiM applies in `internal/platform/macos/window.go`:
+  1. **Two-path focused-window resolution.** On macOS 26 (Tahoe) the
+     system-wide AX element returns `kAXErrorCannotComplete` (-25212)
+     when asked for `kAXFocusedApplicationAttribute` while a Chromium
+     app is foreground. `gwim_ax_focused_window` first tries the
+     traditional `AXUIElementCreateSystemWide` -> `kAXFocusedApplication`
+     path, then falls back to
+     `NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier`
+     -> `AXUIElementCreateApplication(pid)` when the systemwide path
+     fails or returns a focus-less app element. Both paths share a
+     helper that performs the per-app opt-in below before retrieving
+     `kAXFocusedWindow`.
+  2. **`AXManualAccessibility` opt-in** for read-side queries. Since
+     Chromium 88, the renderer's AX tree is OFF by default — until an
+     external client writes `AXManualAccessibility = true` on the
+     application AX element, `kAXFocusedWindow` / `kAXWindows`
+     return nothing. The shared helper detects the empty response,
+     performs the opt-in, polls briefly (≤200ms) for the bridge to
+     come up, and retries. The attribute is left on permanently for
+     that app — toggling it off would re-empty the AX tree.
+  3. **`AXEnhancedUserInterface` toggle** for write-side bugs.
+     `gwim_ax_set_frame` temporarily flips the attribute to `false`
+     before writing geometry (`kAXPosition` → `kAXSize` →
+     `kAXPosition`, the Hammerspoon canonical order) and restores it
+     afterwards. A read-back step retries the write once when the
+     realised frame disagrees with the requested one by more than
+     2 points. Same fix Hammerspoon ships under `setFrameCorrectness`
+     and that Rectangle / Spectacle apply by default.
+
+  Set `GWIM_AX_DEBUG=1` in the launch environment to stream per-call
+  AX diagnostics to stderr when chasing app-specific bugs.
 * **Active App Detection:** Use `NSWorkspace sharedWorkspace frontmostApplication bundleIdentifier` via CGO/Objective-C to fetch the active app identifier for status display in the tray.
 * **Hotkey Management:** Use `NSEvent addGlobalMonitorForEventsMatchingMask` or Carbon's `RegisterEventHotKey`.
 * **Alt-Tab Switcher** (`altswitch_native.m` + `altswitch.go`): borderless

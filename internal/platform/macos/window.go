@@ -6,31 +6,154 @@ package macos
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <math.h>
 
-// gwim_ax_focused_window returns the AXUIElementRef of the currently focused
-// window, or NULL if none. Callers MUST CFRelease the returned reference.
+// Forward declaration — implementation lives further down with the rest
+// of the AX helpers.
+static bool gwim_ax_debug_enabled(void);
+
+// gwim_ax_query_focused_window walks an AXUIElementRef for an
+// application down to its kAXFocusedWindow, performing the
+// AXManualAccessibility opt-in dance for Chromium-style apps along the
+// way. Returns NULL if no focused window is reachable.
 //
-// We deliberately walk: SystemWide -> kAXFocusedApplicationAttribute ->
-// kAXFocusedWindowAttribute. Going via the system-wide element is more
-// reliable than NSWorkspace.frontmostApplication because it survives Spaces
-// transitions and apps that lie about being foreground (e.g. background
-// notification panels).
-static AXUIElementRef gwim_ax_focused_window(void) {
-    AXUIElementRef sys = AXUIElementCreateSystemWide();
-    if (sys == NULL) return NULL;
-
-    CFTypeRef appRef = NULL;
-    AXError err = AXUIElementCopyAttributeValue(sys, kAXFocusedApplicationAttribute, &appRef);
-    CFRelease(sys);
-    if (err != kAXErrorSuccess || appRef == NULL) return NULL;
+// Chromium / Electron (Chrome, Slack, Edge, Brave, VS Code, Discord,
+// …): since Chromium 88 the renderer's AX tree is opt-in. Until an
+// external client sets AXManualAccessibility = true on the app
+// element, kAXFocusedWindow / kAXWindows return nothing. We probe via
+// the normal path; if it returns nothing AND the app exposes
+// AXManualAccessibility, we flip it on, give the renderer a beat to
+// populate the AX tree, and retry. Same trick AltTab.app /
+// Hammerspoon / Yabai use. The attribute is left on intentionally —
+// toggling it off again would re-empty the AX tree.
+static AXUIElementRef gwim_ax_query_focused_window(AXUIElementRef app, const char *via) {
+    if (app == NULL) return NULL;
+    pid_t pid = 0;
+    AXUIElementGetPid(app, &pid);
 
     CFTypeRef windowRef = NULL;
-    err = AXUIElementCopyAttributeValue((AXUIElementRef)appRef, kAXFocusedWindowAttribute, &windowRef);
-    CFRelease(appRef);
-    if (err != kAXErrorSuccess || windowRef == NULL) return NULL;
+    AXError err = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute, &windowRef);
+    if (err == kAXErrorSuccess && windowRef != NULL) {
+        return (AXUIElementRef)windowRef;
+    }
 
-    return (AXUIElementRef)windowRef;
+    CFTypeRef maProbe = NULL;
+    AXError maErr = AXUIElementCopyAttributeValue(app, CFSTR("AXManualAccessibility"), &maProbe);
+    if (maProbe != NULL) CFRelease(maProbe);
+    bool optedIn = false;
+    int polls = 0;
+    if (maErr == kAXErrorSuccess) {
+        AXError setErr = AXUIElementSetAttributeValue(app, CFSTR("AXManualAccessibility"), kCFBooleanTrue);
+        optedIn = true;
+        if (gwim_ax_debug_enabled()) {
+            fprintf(stderr,
+                    "gwim_ax_query_focused_window via=%s pid=%d firstErr=%d setErr=%d (opting in via AXManualAccessibility)\n",
+                    via, (int)pid, (int)err, (int)setErr);
+            fflush(stderr);
+        }
+        for (int i = 0; i < 8; i++) {
+            polls++;
+            usleep(25 * 1000); // 25ms × 8 = up to 200ms
+            windowRef = NULL;
+            err = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute, &windowRef);
+            if (err == kAXErrorSuccess && windowRef != NULL) {
+                if (gwim_ax_debug_enabled()) {
+                    fprintf(stderr,
+                            "gwim_ax_query_focused_window via=%s pid=%d polls=%d (recovered)\n",
+                            via, (int)pid, polls);
+                    fflush(stderr);
+                }
+                return (AXUIElementRef)windowRef;
+            }
+        }
+    }
+
+    if (gwim_ax_debug_enabled()) {
+        fprintf(stderr,
+                "gwim_ax_query_focused_window via=%s pid=%d firstErr=%d maProbeErr=%d optedIn=%d polls=%d (no focused window)\n",
+                via, (int)pid, (int)err, (int)maErr, (int)optedIn, polls);
+        fflush(stderr);
+    }
+    return NULL;
+}
+
+// gwim_ax_focused_window returns the AXUIElementRef of the currently
+// focused window, or NULL if none. Callers MUST CFRelease the returned
+// reference.
+//
+// Strategy: try two independent paths and use whichever finds a window.
+//
+//  1. SystemWide -> kAXFocusedApplicationAttribute. The traditional
+//     reliable path: survives Spaces transitions and apps that lie
+//     about being foreground (e.g. background notification panels).
+//
+//  2. NSWorkspace.frontmostApplication.processIdentifier ->
+//     AXUIElementCreateApplication(pid). Required fallback because on
+//     macOS 26 (Tahoe) the system-wide AX query returns
+//     kAXErrorCannotComplete (-25212) for Chrome and other Chromium /
+//     Electron apps — the AX subsystem refuses to identify them as
+//     the focused app. NSWorkspace doesn't share this limitation. We
+//     keep both paths because the system-wide query is faster on
+//     well-behaved apps and survives weird focus edge cases the
+//     NSWorkspace path would mishandle. AltTab.app and Yabai use the
+//     same belt-and-braces approach.
+//
+// Each candidate app element is walked via gwim_ax_query_focused_window
+// which also handles the Chromium AXManualAccessibility opt-in for the
+// renderers that need it.
+static AXUIElementRef gwim_ax_focused_window(void) {
+    bool dbg = gwim_ax_debug_enabled();
+
+    // Path 1: system-wide.
+    AXUIElementRef sys = AXUIElementCreateSystemWide();
+    AXError sysErr = kAXErrorFailure;
+    if (sys != NULL) {
+        CFTypeRef appRef = NULL;
+        sysErr = AXUIElementCopyAttributeValue(sys, kAXFocusedApplicationAttribute, &appRef);
+        CFRelease(sys);
+        if (sysErr == kAXErrorSuccess && appRef != NULL) {
+            AXUIElementRef win = gwim_ax_query_focused_window((AXUIElementRef)appRef, "systemwide");
+            CFRelease(appRef);
+            if (win != NULL) return win;
+        } else if (appRef != NULL) {
+            // Some macOS versions write a non-NULL value AND return an
+            // error; release defensively.
+            CFRelease(appRef);
+        }
+    }
+
+    // Path 2: NSWorkspace.frontmostApplication fallback. Log once per
+    // process when we have to use it so the diagnostic output stays
+    // legible — the systemwide failure repeats on every keystroke on
+    // affected macOS versions and we don't want to flood stderr.
+    static bool fallbackLogged = false;
+
+    NSRunningApplication *front = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    if (front == nil) {
+        if (dbg) {
+            fprintf(stderr, "gwim_ax_focused_window: NSWorkspace.frontmostApplication is nil\n");
+            fflush(stderr);
+        }
+        return NULL;
+    }
+    pid_t pid = [front processIdentifier];
+    if (dbg && !fallbackLogged) {
+        const char *bundle = [[front bundleIdentifier] UTF8String];
+        fprintf(stderr,
+                "gwim_ax_focused_window: systemwide path returned err=%d, falling back to NSWorkspace "
+                "(first occurrence; pid=%d bundle=%s — further fallbacks suppressed)\n",
+                (int)sysErr, (int)pid, bundle ? bundle : "(nil)");
+        fflush(stderr);
+        fallbackLogged = true;
+    }
+    AXUIElementRef app = AXUIElementCreateApplication(pid);
+    if (app == NULL) return NULL;
+    AXUIElementRef win = gwim_ax_query_focused_window(app, "nsworkspace");
+    CFRelease(app);
+    return win;
 }
 
 // gwim_ax_get_frame fills out_x/out_y/out_w/out_h with the window's
@@ -56,34 +179,152 @@ static bool gwim_ax_get_frame(AXUIElementRef win,
     return true;
 }
 
-// gwim_ax_set_frame sets size first, then position.
+// gwim_ax_app_for_window returns the AXUIElementRef for the window's
+// owning application, or NULL on failure. Caller must CFRelease.
 //
-// Some misbehaving apps (Chrome, Slack) clamp the new size against the
-// "current" screen before applying position; setting size first reduces the
-// number of cases where the window ends up in the wrong slot. After both
-// writes we re-read and, if the realized frame disagrees, retry once with
-// the position re-applied. This matches the technique Hammerspoon uses.
-static bool gwim_ax_set_frame(AXUIElementRef win, double x, double y, double w, double h) {
-    CGPoint pos = (CGPoint){ .x = x, .y = y };
-    CGSize  sz  = (CGSize){ .width = w, .height = h };
+// We need the parent application element (not the window) to read and
+// write kAXEnhancedUserInterfaceAttribute / kAXManualAccessibility —
+// those attributes live on the app, not on individual windows.
+static AXUIElementRef gwim_ax_app_for_window(AXUIElementRef win) {
+    pid_t pid = 0;
+    if (AXUIElementGetPid(win, &pid) != kAXErrorSuccess || pid == 0) return NULL;
+    return AXUIElementCreateApplication(pid);
+}
 
-    AXValueRef sizeVal = AXValueCreate(kAXValueCGSizeType, &sz);
-    AXValueRef posVal  = AXValueCreate(kAXValueCGPointType, &pos);
-    if (sizeVal == NULL || posVal == NULL) {
-        if (sizeVal) CFRelease(sizeVal);
-        if (posVal)  CFRelease(posVal);
+// gwim_ax_get_bool_attr reads a CFBoolean attribute on the supplied
+// element. out_present is set to true if the attribute exists at all (so
+// callers know whether they need to restore it on the way out).
+static bool gwim_ax_get_bool_attr(AXUIElementRef elem, CFStringRef attr, bool *out_present) {
+    *out_present = false;
+    if (elem == NULL) return false;
+    CFTypeRef val = NULL;
+    if (AXUIElementCopyAttributeValue(elem, attr, &val) != kAXErrorSuccess || val == NULL) {
         return false;
     }
+    *out_present = true;
+    bool b = (CFGetTypeID(val) == CFBooleanGetTypeID()) && CFBooleanGetValue((CFBooleanRef)val);
+    CFRelease(val);
+    return b;
+}
 
-    AXError e1 = AXUIElementSetAttributeValue(win, kAXSizeAttribute, sizeVal);
-    AXError e2 = AXUIElementSetAttributeValue(win, kAXPositionAttribute, posVal);
-    AXError e3 = AXUIElementSetAttributeValue(win, kAXSizeAttribute, sizeVal);
+// gwim_ax_set_bool_attr writes a CFBoolean attribute on the supplied
+// element. Errors are intentionally ignored — the toggle is best-effort
+// and the caller restores the prior value on the way out regardless.
+static void gwim_ax_set_bool_attr(AXUIElementRef elem, CFStringRef attr, bool v) {
+    if (elem == NULL) return;
+    AXUIElementSetAttributeValue(elem, attr, v ? kCFBooleanTrue : kCFBooleanFalse);
+}
 
-    CFRelease(sizeVal);
-    CFRelease(posVal);
-    return (e1 == kAXErrorSuccess || e1 == kAXErrorNotImplemented)
-        && (e2 == kAXErrorSuccess)
-        && (e3 == kAXErrorSuccess || e3 == kAXErrorNotImplemented);
+// Tunable: the GWIM_AX_DEBUG=1 environment variable enables NSLog-based
+// diagnostics for every gwim_ax_set_frame call. Visible via Console.app
+// or stderr when GWiM is launched from Terminal. Off by default to keep
+// system logs clean.
+static bool gwim_ax_debug_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("GWIM_AX_DEBUG");
+        cached = (env != NULL && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+        if (cached == 1) {
+            fprintf(stderr, "gwim: GWIM_AX_DEBUG=1 — AX diagnostics enabled\n");
+            fflush(stderr);
+        }
+    }
+    return cached == 1;
+}
+
+// gwim_ax_set_frame moves and resizes a window via AX, applying the
+// Hammerspoon `setFrameCorrectness` workaround for Chromium / Electron
+// apps and a defensive read-back/retry for the rest.
+//
+// AXEnhancedUserInterface: Chrome, Slack, Edge, Brave, VS Code,
+// Discord, and friends expose this attribute on their application AX
+// element. While it is true the macOS Accessibility server silently
+// drops kAXPosition / kAXSize writes on the app's windows — the calls
+// return kAXErrorSuccess but the window never actually moves. The
+// accepted fix (Hammerspoon `setFrameCorrectness`) is to temporarily
+// flip the attribute off, write the geometry, then restore.
+//
+// AXManualAccessibility: a separate Chromium attribute that opts the
+// renderer INTO exposing its AX tree. We deliberately do NOT toggle
+// this here — it is set to true once in gwim_ax_focused_window() for
+// Chromium-style apps and must stay on, otherwise the AX tree empties
+// and subsequent queries fail.
+//
+// Implementation notes:
+//   - Toggling EUI is asynchronous in the target app; we sleep ~15ms
+//     after disabling so Chrome's AX server has time to reconfigure
+//     before the writes land.
+//   - Write order is position -> size -> position. With EUI off this
+//     is the canonical Hammerspoon order; the trailing position write
+//     defends against apps that clamp position when size changes.
+//   - We re-read the realized frame and retry once with a fresh write
+//     if the result diverges by more than a couple of points. Belt
+//     and braces for apps we don't yet know about.
+//
+// Set GWIM_AX_DEBUG=1 in the environment to log per-call diagnostics
+// (NSLog → Console.app / stderr) when chasing app-specific bugs.
+static bool gwim_ax_set_frame(AXUIElementRef win, double x, double y, double w, double h) {
+    AXUIElementRef app = gwim_ax_app_for_window(win);
+    pid_t pid = 0;
+    if (app != NULL) AXUIElementGetPid(app, &pid);
+
+    bool euiPresent = false, euiWasOn = false;
+    if (app != NULL) {
+        euiWasOn = gwim_ax_get_bool_attr(app, CFSTR("AXEnhancedUserInterface"), &euiPresent);
+    }
+    if (euiPresent && euiWasOn) {
+        gwim_ax_set_bool_attr(app, CFSTR("AXEnhancedUserInterface"), false);
+        // 15ms is empirically enough for Chrome to flush its AX state.
+        usleep(15 * 1000);
+    }
+
+    CGPoint pos = (CGPoint){ .x = x, .y = y };
+    CGSize  sz  = (CGSize){ .width = w, .height = h };
+    AXValueRef posVal  = AXValueCreate(kAXValueCGPointType, &pos);
+    AXValueRef sizeVal = AXValueCreate(kAXValueCGSizeType, &sz);
+
+    AXError e1 = kAXErrorSuccess, e2 = kAXErrorSuccess, e3 = kAXErrorSuccess;
+    bool ok = false;
+    if (posVal != NULL && sizeVal != NULL) {
+        e1 = AXUIElementSetAttributeValue(win, kAXPositionAttribute, posVal);
+        e2 = AXUIElementSetAttributeValue(win, kAXSizeAttribute,     sizeVal);
+        e3 = AXUIElementSetAttributeValue(win, kAXPositionAttribute, posVal);
+        ok = (e1 == kAXErrorSuccess)
+          && (e2 == kAXErrorSuccess || e2 == kAXErrorNotImplemented)
+          && (e3 == kAXErrorSuccess);
+    }
+
+    // Read-back: did the writes actually land? If not, retry once.
+    double rx = 0, ry = 0, rw = 0, rh = 0;
+    bool readBackOK = gwim_ax_get_frame(win, &rx, &ry, &rw, &rh);
+    bool drifted = readBackOK
+                && (fabs(rx - x) > 2 || fabs(ry - y) > 2
+                 || fabs(rw - w) > 2 || fabs(rh - h) > 2);
+    if (drifted && posVal != NULL && sizeVal != NULL) {
+        AXUIElementSetAttributeValue(win, kAXPositionAttribute, posVal);
+        AXUIElementSetAttributeValue(win, kAXSizeAttribute,     sizeVal);
+        AXUIElementSetAttributeValue(win, kAXPositionAttribute, posVal);
+        readBackOK = gwim_ax_get_frame(win, &rx, &ry, &rw, &rh);
+    }
+
+    if (gwim_ax_debug_enabled()) {
+        fprintf(stderr,
+                "gwim_ax_set_frame pid=%d eui(present=%d,was=%d) "
+                "req=(%.0f,%.0f,%.0fx%.0f) errs=(%d,%d,%d) "
+                "realized=(%.0f,%.0f,%.0fx%.0f,readOK=%d) drifted=%d\n",
+                (int)pid, euiPresent, euiWasOn,
+                x, y, w, h, (int)e1, (int)e2, (int)e3,
+                rx, ry, rw, rh, (int)readBackOK, (int)drifted);
+        fflush(stderr);
+    }
+
+    if (sizeVal) CFRelease(sizeVal);
+    if (posVal)  CFRelease(posVal);
+
+    if (euiPresent && euiWasOn) gwim_ax_set_bool_attr(app, CFSTR("AXEnhancedUserInterface"), true);
+    if (app) CFRelease(app);
+
+    return ok || readBackOK;
 }
 
 // gwim_ax_toggle_fullscreen flips kAXFullScreenAttribute, which triggers the

@@ -8,6 +8,29 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Window placement hotkeys now work in Chrome and other Chromium /
+  Electron apps** on macOS 26 (Tahoe). On affected macOS versions,
+  the system-wide AX element returns `kAXErrorCannotComplete` (-25212)
+  when asked for `kAXFocusedApplicationAttribute` while a Chromium app
+  is foreground — so GWiM never even reached `SetFrame`, every
+  placement hotkey logged `wm: no active window` and did nothing.
+  `gwim_ax_focused_window` now uses two independent resolution paths
+  and picks whichever returns a window:
+  1. SystemWide -> `kAXFocusedApplicationAttribute` (the traditional
+     fast path; still preferred when it works).
+  2. `NSWorkspace.frontmostApplication.processIdentifier` ->
+     `AXUIElementCreateApplication(pid)` (required fallback for
+     Chromium on macOS 26; same approach AltTab.app and Yabai use).
+  Both paths route the resulting app element through a shared helper
+  that also performs the Chromium `AXManualAccessibility = true`
+  opt-in dance (with a short poll loop) for renderers that ship with
+  their AX tree disabled. `gwim_ax_set_frame` keeps the
+  `AXEnhancedUserInterface` toggle, a 15ms settle delay, and a
+  read-back / single-retry safety net so apps that misbehave on the
+  write side are still robust. A `GWIM_AX_DEBUG=1` env var gates
+  per-call diagnostics to stderr for future troubleshooting (the
+  noisy systemwide-fallback line is rate-limited to once per process).
+
 - **Alt-Tab switcher now covers every macOS Space**, not just the
   currently-visible Space on each display. The previous implementation
   treated `kAXWindowsAttribute` as the source of truth, which silently

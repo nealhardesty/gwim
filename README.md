@@ -284,6 +284,29 @@ assets/Info.plist.template# .app bundle plist (LSUIElement=YES)
 - **Build/install lifecycle is TCC-safe**: `make app` signs the bundle
   (`make codesign`) so the app has a stable identity (`dev.nealhardesty.gwim`)
   and macOS Accessibility grants remain valid across rebuilds.
+- **Chromium / Electron compatibility**: Chrome, Slack, Edge, Brave,
+  VS Code, Discord, and similar apps require a stack of AX
+  workarounds in `internal/platform/macos/window.go`.
+  1. **Two-path focused-window resolution.** On macOS 26 (Tahoe)
+     the system-wide AX element refuses to identify Chromium apps as
+     the focused application (returns `kAXErrorCannotComplete`).
+     `gwim_ax_focused_window` falls back to
+     `NSWorkspace.frontmostApplication.processIdentifier` →
+     `AXUIElementCreateApplication(pid)` — same approach AltTab.app
+     and Yabai use.
+  2. **`AXManualAccessibility` opt-in.** Since Chromium 88 the
+     renderer's AX tree is opt-in. The focused-window helper writes
+     `AXManualAccessibility = true` on the application element when
+     `kAXFocusedWindow` comes back empty, polls briefly for the
+     bridge to come up, and retries.
+  3. **`AXEnhancedUserInterface` toggle.** `gwim_ax_set_frame`
+     applies the Hammerspoon `setFrameCorrectness` trick: temporarily
+     toggle the attribute off, write `position → size → position`,
+     restore. A read-back / retry step covers apps that revert
+     geometry on first write.
+
+  Set `GWIM_AX_DEBUG=1` in the launch environment to stream per-call
+  AX diagnostics to stderr when investigating app-specific issues.
 - **Tray clicks bypass suspension** because they are an explicit user
   request. Hotkeys observe suspension because they are ambiguous intent.
 - **Single-source shortcut table**: `engine.DefaultShortcuts()` powers
