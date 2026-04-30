@@ -22,7 +22,7 @@ import (
 // API we need lives in user32.dll / kernel32.dll and is reachable through
 // the standard syscall package.
 var (
-	user32                 = syscall.NewLazyDLL("user32.dll")
+	user32                  = syscall.NewLazyDLL("user32.dll")
 	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
 	procGetWindowRect       = user32.NewProc("GetWindowRect")
 	procSetWindowPos        = user32.NewProc("SetWindowPos")
@@ -39,10 +39,10 @@ var (
 // Win32 constants we reference. Keeping them local avoids a hard
 // dependency on the version of golang.org/x/sys that exposes them.
 const (
-	swpNoZorder       = 0x0004
-	swpNoActivate     = 0x0010
-	swpFrameChanged   = 0x0020
-	swpShowWindow     = 0x0040
+	swpNoZorder     = 0x0004
+	swpNoActivate   = 0x0010
+	swpFrameChanged = 0x0020
+	swpShowWindow   = 0x0040
 
 	swRestore  = 9
 	swMaximize = 3

@@ -181,12 +181,12 @@ func pngToICO(srcPath, dstPath string) error {
 	}
 	out.WriteByte(w)
 	out.WriteByte(h)
-	out.WriteByte(0) // color count (0 for 32bpp)
-	out.WriteByte(0) // reserved
-	binary.Write(&out, binary.LittleEndian, uint16(1))               // color planes
-	binary.Write(&out, binary.LittleEndian, uint16(32))              // bits per pixel
-	binary.Write(&out, binary.LittleEndian, uint32(len(pngBytes)))   // bytes in payload
-	binary.Write(&out, binary.LittleEndian, uint32(dataOffset))      // payload offset
+	out.WriteByte(0)                                               // color count (0 for 32bpp)
+	out.WriteByte(0)                                               // reserved
+	binary.Write(&out, binary.LittleEndian, uint16(1))             // color planes
+	binary.Write(&out, binary.LittleEndian, uint16(32))            // bits per pixel
+	binary.Write(&out, binary.LittleEndian, uint32(len(pngBytes))) // bytes in payload
+	binary.Write(&out, binary.LittleEndian, uint32(dataOffset))    // payload offset
 
 	out.Write(pngBytes)
 	return os.WriteFile(dstPath, out.Bytes(), 0o644)

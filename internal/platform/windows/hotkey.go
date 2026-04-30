@@ -17,11 +17,11 @@ import (
 // RegisterHotKey), so we run a dedicated OS-thread-locked goroutine that
 // owns every binding.
 var (
-	procRegisterHotKey   = user32.NewProc("RegisterHotKey")
-	procUnregisterHotKey = user32.NewProc("UnregisterHotKey")
-	procGetMessageW      = user32.NewProc("GetMessageW")
-	procTranslateMessage = user32.NewProc("TranslateMessage")
-	procDispatchMessageW = user32.NewProc("DispatchMessageW")
+	procRegisterHotKey     = user32.NewProc("RegisterHotKey")
+	procUnregisterHotKey   = user32.NewProc("UnregisterHotKey")
+	procGetMessageW        = user32.NewProc("GetMessageW")
+	procTranslateMessage   = user32.NewProc("TranslateMessage")
+	procDispatchMessageW   = user32.NewProc("DispatchMessageW")
 	procPostThreadMessageW = user32.NewProc("PostThreadMessageW")
 
 	procGetCurrentThreadId = kernel32.NewProc("GetCurrentThreadId")
@@ -51,10 +51,10 @@ type msg struct {
 
 // hkBinding is a single registered key combination.
 type hkBinding struct {
-	id        uint32 // matches the WPARAM Win32 sends in WM_HOTKEY
-	modifiers uint32
-	keycode   uint32
-	handler   wm.HotkeyHandler
+	id         uint32 // matches the WPARAM Win32 sends in WM_HOTKEY
+	modifiers  uint32
+	keycode    uint32
+	handler    wm.HotkeyHandler
 	persistent bool
 	// registered tracks whether the OS currently has this binding live.
 	// SetSuspended(true) clears it on regular bindings so the keys flow to
