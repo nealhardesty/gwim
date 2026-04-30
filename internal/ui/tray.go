@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/getlantern/systray"
 
@@ -71,6 +72,11 @@ type Tray struct {
 	mu             sync.Mutex
 	shortcutItems  map[string]*systray.MenuItem
 	stopShortcutCh chan struct{}
+
+	// screenRecordingBeyondFirstClick is true after the first menu click on
+	// the Screen Recording row (process lifetime). First click runs
+	// RequestScreenRecording only; later clicks open System Settings only.
+	screenRecordingBeyondFirstClick atomic.Bool
 }
 
 // New constructs a Tray. The version string is shown in the menu footer;
@@ -139,7 +145,8 @@ func (t *Tray) build() {
 	t.mItemAccess.Hide() // unhide in refresh() once we know we have a probe configured
 	// Screen Recording is the optional companion permission — granted
 	// state enables live window thumbnails in the Alt-Tab switcher.
-	t.mItemScreen = systray.AddMenuItem("Screen Recording: (checking…)", "Click to enable live thumbnails in the switcher")
+	t.mItemScreen = systray.AddMenuItem("Screen Recording: (checking…)",
+		"First click: macOS permission prompt. Click again: System Settings (live thumbnails in the switcher)")
 	t.mItemScreen.Hide() // unhide once we know the state
 	go t.handleAccessClick()
 	go t.handleScreenClick()
@@ -276,13 +283,18 @@ func (t *Tray) handleScreenClick() {
 		case <-t.stopShortcutCh:
 			return
 		case <-t.mItemScreen.ClickedCh:
-			if t.RequestScreenRecording != nil {
-				t.RequestScreenRecording()
-			}
-			t.eng.RefreshScreenRecording()
-			if t.OpenScreenRecordingSettings != nil {
+			// First click: CGRequestScreenCaptureAccess only (system dialog).
+			// Later clicks: open the Screen Recording pane only — avoids
+			// stacking dialog + Settings on a single action.
+			first := !t.screenRecordingBeyondFirstClick.Swap(true)
+			if first {
+				if t.RequestScreenRecording != nil {
+					t.RequestScreenRecording()
+				}
+			} else if t.OpenScreenRecordingSettings != nil {
 				t.OpenScreenRecordingSettings()
 			}
+			t.eng.RefreshScreenRecording()
 		}
 	}
 }

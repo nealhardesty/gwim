@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tray Screen Recording row** no longer runs the macOS permission dialog
+  and opens **System Settings → Screen Recording** on the same click.
+  The first click triggers `CGRequestScreenCaptureAccess` only; a second
+  click opens the Settings pane (matches the documented intent).
+
 ### Changed
 
 - **`make release` now bundles BOTH platforms.** The release target now

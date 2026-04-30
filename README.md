@@ -50,10 +50,12 @@ shortcuts reach another app unchanged (e.g. remote desktop).
     **Accessibility grant state**.
   - Clickable **Accessibility** status row opens
     **System Settings → Privacy & Security → Accessibility** directly.
-  - Clickable **Screen Recording** status row mirrors the AX one —
-    surfaces grant state and triggers the macOS permission prompt /
-    System Settings on click. Required only for live thumbnails in
-    the Alt-Tab switcher; switcher works without it (icon-only mode).
+  - Clickable **Screen Recording** status row surfaces grant state. When
+    thumbnails are off, the **first** click triggers the macOS permission
+    dialog only; a **second** click opens **System Settings → Privacy &
+    Security → Screen Recording** (so you are not hit with both at once).
+    Required only for live thumbnails in the Alt-Tab switcher; switcher
+    works without it (icon-only mode).
   - **Open at Login** (checkable): when you run from **GWiM.app** on
     **macOS 13 or later**, toggles registration with the system so GWiM
     starts at login (same mechanism as **System Settings → General →
