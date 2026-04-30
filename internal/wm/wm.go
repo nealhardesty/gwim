@@ -65,11 +65,20 @@ type WindowManager interface {
 // PID is the owning process; CGID is the macOS CGWindowID (or platform
 // equivalent) that uniquely identifies the window for the lifetime of the
 // process. Title and AppName are display-only.
+//
+// Minimized reports that the window is currently minimized (e.g. dropped
+// to the macOS Dock). Hidden reports that the owning application is
+// hidden (e.g. via Cmd+H / NSRunningApplication.hide). Either flag tells
+// the overlay to dim the slot so users can still distinguish those
+// windows; the platform's raise path un-minimises and un-hides on
+// commit.
 type WindowInfo struct {
-	PID     int32
-	CGID    uint32
-	Title   string
-	AppName string
+	PID       int32
+	CGID      uint32
+	Title     string
+	AppName   string
+	Minimized bool
+	Hidden    bool
 }
 
 // Switcher drives the Alt-Tab keyboard window switcher (per ALTTAB.md).

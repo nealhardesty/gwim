@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 // Forward declaration of the Go callback. cgo synthesises this symbol
 // from gwimAltswitchEvent's //export directive in altswitch.go.
@@ -67,6 +68,9 @@ static const CGFloat kGwimOverlayMaxScreenFraction = 0.9;
 @property (nonatomic, strong) NSArray *thumbnails;  // NSImage* or NSNull* (one per slot)
 @property (nonatomic, strong) NSArray *titles;      // NSString*
 @property (nonatomic, strong) NSArray *appNames;    // NSString*
+/// Boxed BOOL per slot — YES means draw the icon/thumbnail at reduced
+/// opacity to indicate the window is minimised or its app is hidden.
+@property (nonatomic, strong) NSArray *dimmed;
 @property (nonatomic) NSInteger selected;
 @property (nonatomic) NSInteger cols;
 /// Uniform scale vs kGwimSlot* base geometry (set in gwim_overlay_show).
@@ -157,6 +161,15 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
         BOOL haveThumb = [thumbObj isKindOfClass:[NSImage class]];
         BOOL haveIcon  = [iconObj  isKindOfClass:[NSImage class]];
 
+        BOOL slotDimmed = NO;
+        if (i < (NSInteger)self.dimmed.count) {
+            id d = self.dimmed[i];
+            if ([d isKindOfClass:[NSNumber class]]) {
+                slotDimmed = [(NSNumber *)d boolValue];
+            }
+        }
+        CGFloat artFraction = slotDimmed ? 0.45 : 1.0;
+
         if (haveThumb) {
             // Inset slightly so a thumbnail doesn't overlap the selection
             // ring; aspect-fit so window proportions are preserved.
@@ -176,7 +189,7 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
             [thumb drawInRect:drawRect
                      fromRect:NSZeroRect
                     operation:NSCompositingOperationSourceOver
-                     fraction:1.0];
+                     fraction:artFraction];
             [NSGraphicsContext restoreGraphicsState];
 
             // App icon badge in the bottom-right corner.
@@ -188,7 +201,7 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
                 [(NSImage *)iconObj drawInRect:badgeRect
                                       fromRect:NSZeroRect
                                      operation:NSCompositingOperationSourceOver
-                                      fraction:1.0];
+                                      fraction:artFraction];
             }
         } else if (haveIcon) {
             // No thumbnail — fall back to the app icon centred large.
@@ -199,7 +212,7 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
             [(NSImage *)iconObj drawInRect:iconRect
                                   fromRect:NSZeroRect
                                  operation:NSCompositingOperationSourceOver
-                                  fraction:1.0];
+                                  fraction:artFraction];
         } else {
             // No icon and no thumbnail — placeholder so the slot is visible.
             [[NSColor colorWithCalibratedWhite:0.4 alpha:1.0] setFill];
@@ -343,6 +356,9 @@ static NSArray *gwim_capture_thumbnails(int *cgids, int count) {
 // Parallel arrays:
 //   pids[i]              — owning process pid (used for app icon lookup)
 //   cgids[i]             — CGWindowID (used for thumbnail capture; 0 to skip)
+//   dimmed_flags[i]      — non-zero ⇒ slot is rendered at reduced opacity
+//                          (window is minimised or its app is hidden);
+//                          may be NULL ⇒ all slots full opacity.
 //   titles_and_apps[i*2] — window title (UTF-8 C string, may be empty)
 //   titles_and_apps[i*2+1] — application localised name (UTF-8 C string)
 //
@@ -353,6 +369,7 @@ static NSArray *gwim_capture_thumbnails(int *cgids, int count) {
 // occluded window, etc.) silently falls back to the app icon.
 void gwim_overlay_show(int *pids,
                        int *cgids,
+                       int *dimmed_flags,
                        const char **titles_and_apps,
                        int count,
                        int selected) {
@@ -361,6 +378,7 @@ void gwim_overlay_show(int *pids,
     NSMutableArray *icons    = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *titleArr = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *appArr   = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray *dimArr   = [NSMutableArray arrayWithCapacity:count];
 
     for (int i = 0; i < count; i++) {
         pid_t pid = (pid_t)pids[i];
@@ -373,6 +391,9 @@ void gwim_overlay_show(int *pids,
         const char *a = titles_and_apps[i * 2 + 1];
         [titleArr addObject:(t ? [NSString stringWithUTF8String:t] : @"")];
         [appArr   addObject:(a ? [NSString stringWithUTF8String:a] : @"")];
+
+        BOOL dim = (dimmed_flags != NULL) && (dimmed_flags[i] != 0);
+        [dimArr addObject:@(dim)];
     }
 
     // Batch-capture thumbnails. Returns NSNull* placeholders for windows
@@ -456,6 +477,7 @@ void gwim_overlay_show(int *pids,
             view.thumbnails = thumbnails;
             view.titles = titleArr;
             view.appNames = appArr;
+            view.dimmed = dimArr;
             view.cols = cols;
             view.selected = selected;
             view.layoutScale = s;
@@ -586,6 +608,8 @@ typedef struct {
     uint32_t cgid;
     char    *title;     // strdup'd; freed by gwim_free_window_entries
     char    *app_name;  // strdup'd; freed by gwim_free_window_entries
+    bool     minimized; // window is currently minimized to the Dock
+    bool     hidden;    // owning app is hidden via Cmd+H / NSRunningApplication.hide
 } gwim_window_entry;
 
 // dup_cfstring_utf8 returns a strdup'd UTF-8 copy of a CFString, or NULL.
@@ -656,85 +680,162 @@ int gwim_enumerate_windows(gwim_window_entry *out_arr,
         pid_t pid = [app processIdentifier];
         if (pid <= 0) continue;
 
+        BOOL appHidden = [app isHidden];
+
+        // Resolve the app's localised name once; reused for every entry
+        // we emit on this app (including the CGWindowList fallback).
+        char *appName = NULL;
+        NSString *localized = [app localizedName];
+        if (localized != nil) {
+            const char *u = [localized UTF8String];
+            if (u != NULL) appName = strdup(u);
+        }
+        if (appName == NULL) appName = strdup("");
+
         AXUIElementRef appAX = AXUIElementCreateApplication(pid);
-        if (appAX == NULL) continue;
+        if (appAX == NULL) {
+            free(appName);
+            continue;
+        }
 
         CFTypeRef windowsRef = NULL;
         AXError err = AXUIElementCopyAttributeValue(appAX, kAXWindowsAttribute,
                                                     &windowsRef);
-        if (err != kAXErrorSuccess || windowsRef == NULL) {
-            CFRelease(appAX);
-            continue;
+        int axEmittedForApp = 0;
+        if (err == kAXErrorSuccess && windowsRef != NULL) {
+            CFArrayRef windows = (CFArrayRef)windowsRef;
+            CFIndex n = CFArrayGetCount(windows);
+            for (CFIndex i = 0; i < n && count < max; i++) {
+                AXUIElementRef win =
+                    (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+
+                // Only standard windows: dialogs, sheets, utility panels, and
+                // popovers don't belong in an Alt-Tab list.
+                CFTypeRef subroleRef = NULL;
+                BOOL isStandard = NO;
+                if (AXUIElementCopyAttributeValue(win, kAXSubroleAttribute, &subroleRef)
+                    == kAXErrorSuccess && subroleRef != NULL) {
+                    if (CFGetTypeID(subroleRef) == CFStringGetTypeID() &&
+                        CFStringCompare((CFStringRef)subroleRef,
+                                        kAXStandardWindowSubrole, 0)
+                        == kCFCompareEqualTo) {
+                        isStandard = YES;
+                    }
+                    CFRelease(subroleRef);
+                }
+                if (!isStandard) continue;
+
+                // Track minimised state but no longer skip — gwim_raise_window
+                // un-minimises before raising, and the overlay dims the slot
+                // so users can still tell at a glance.
+                CFTypeRef minRef = NULL;
+                BOOL isMin = NO;
+                if (AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute, &minRef)
+                    == kAXErrorSuccess && minRef != NULL) {
+                    if (CFGetTypeID(minRef) == CFBooleanGetTypeID()) {
+                        isMin = CFBooleanGetValue((CFBooleanRef)minRef);
+                    }
+                    CFRelease(minRef);
+                }
+
+                CGWindowID cgid = 0;
+                if (_AXUIElementGetWindow(win, &cgid) != kAXErrorSuccess || cgid == 0) {
+                    continue;
+                }
+
+                CFTypeRef titleRef = NULL;
+                char *title = NULL;
+                if (AXUIElementCopyAttributeValue(win, kAXTitleAttribute, &titleRef)
+                    == kAXErrorSuccess && titleRef != NULL) {
+                    if (CFGetTypeID(titleRef) == CFStringGetTypeID()) {
+                        title = dup_cfstring_utf8((CFStringRef)titleRef);
+                    }
+                    CFRelease(titleRef);
+                }
+                if (title == NULL) title = strdup("");
+
+                out_arr[count].pid       = pid;
+                out_arr[count].cgid      = (uint32_t)cgid;
+                out_arr[count].title     = title;
+                out_arr[count].app_name  = strdup(appName);
+                out_arr[count].minimized = (bool)isMin;
+                out_arr[count].hidden    = (bool)appHidden;
+                count++;
+                axEmittedForApp++;
+            }
+            CFRelease(windowsRef);
         }
-
-        CFArrayRef windows = (CFArrayRef)windowsRef;
-        CFIndex n = CFArrayGetCount(windows);
-        for (CFIndex i = 0; i < n && count < max; i++) {
-            AXUIElementRef win =
-                (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
-
-            // Only standard windows: dialogs, sheets, utility panels, and
-            // popovers don't belong in an Alt-Tab list.
-            CFTypeRef subroleRef = NULL;
-            BOOL isStandard = NO;
-            if (AXUIElementCopyAttributeValue(win, kAXSubroleAttribute, &subroleRef)
-                == kAXErrorSuccess && subroleRef != NULL) {
-                if (CFGetTypeID(subroleRef) == CFStringGetTypeID() &&
-                    CFStringCompare((CFStringRef)subroleRef,
-                                    kAXStandardWindowSubrole, 0)
-                    == kCFCompareEqualTo) {
-                    isStandard = YES;
-                }
-                CFRelease(subroleRef);
-            }
-            if (!isStandard) continue;
-
-            // Skip minimised windows — they aren't directly raisable to
-            // visible state from AX without unminimising, which the user
-            // didn't ask for in this MVP.
-            CFTypeRef minRef = NULL;
-            BOOL isMin = NO;
-            if (AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute, &minRef)
-                == kAXErrorSuccess && minRef != NULL) {
-                if (CFGetTypeID(minRef) == CFBooleanGetTypeID()) {
-                    isMin = CFBooleanGetValue((CFBooleanRef)minRef);
-                }
-                CFRelease(minRef);
-            }
-            if (isMin) continue;
-
-            CGWindowID cgid = 0;
-            if (_AXUIElementGetWindow(win, &cgid) != kAXErrorSuccess || cgid == 0) {
-                continue;
-            }
-
-            CFTypeRef titleRef = NULL;
-            char *title = NULL;
-            if (AXUIElementCopyAttributeValue(win, kAXTitleAttribute, &titleRef)
-                == kAXErrorSuccess && titleRef != NULL) {
-                if (CFGetTypeID(titleRef) == CFStringGetTypeID()) {
-                    title = dup_cfstring_utf8((CFStringRef)titleRef);
-                }
-                CFRelease(titleRef);
-            }
-            if (title == NULL) title = strdup("");
-
-            char *appName = NULL;
-            NSString *localized = [app localizedName];
-            if (localized != nil) {
-                const char *u = [localized UTF8String];
-                if (u != NULL) appName = strdup(u);
-            }
-            if (appName == NULL) appName = strdup("");
-
-            out_arr[count].pid      = pid;
-            out_arr[count].cgid     = (uint32_t)cgid;
-            out_arr[count].title    = title;
-            out_arr[count].app_name = appName;
-            count++;
-        }
-        CFRelease(windowsRef);
         CFRelease(appAX);
+
+        // Fallback: AX sometimes returns an empty window list for hidden
+        // apps (Cmd+H'd background processes whose accessibility tree
+        // hasn't been instantiated yet). Discover their windows via
+        // CGWindowListCopyWindowInfo so they still show up in the
+        // switcher; raise will unhide the app and re-resolve via AX.
+        if (axEmittedForApp == 0 && appHidden && count < max) {
+            CFArrayRef cgWindows = CGWindowListCopyWindowInfo(
+                kCGWindowListOptionAll, kCGNullWindowID);
+            if (cgWindows != NULL) {
+                CFIndex cgN = CFArrayGetCount(cgWindows);
+                for (CFIndex i = 0; i < cgN && count < max; i++) {
+                    CFDictionaryRef d =
+                        (CFDictionaryRef)CFArrayGetValueAtIndex(cgWindows, i);
+                    if (d == NULL) continue;
+
+                    CFNumberRef ownerPidRef =
+                        (CFNumberRef)CFDictionaryGetValue(d, kCGWindowOwnerPID);
+                    if (ownerPidRef == NULL) continue;
+                    pid_t ownerPid = 0;
+                    CFNumberGetValue(ownerPidRef, kCFNumberIntType, &ownerPid);
+                    if (ownerPid != pid) continue;
+
+                    CFNumberRef layerRef =
+                        (CFNumberRef)CFDictionaryGetValue(d, kCGWindowLayer);
+                    int layer = -1;
+                    if (layerRef != NULL) {
+                        CFNumberGetValue(layerRef, kCFNumberIntType, &layer);
+                    }
+                    if (layer != 0) continue;
+
+                    CFDictionaryRef boundsDict =
+                        (CFDictionaryRef)CFDictionaryGetValue(d, kCGWindowBounds);
+                    if (boundsDict == NULL) continue;
+                    CGRect bounds = CGRectZero;
+                    if (!CGRectMakeWithDictionaryRepresentation(boundsDict, &bounds)) {
+                        continue;
+                    }
+                    if (bounds.size.width < 64.0 || bounds.size.height < 64.0) {
+                        continue;
+                    }
+
+                    CFNumberRef numRef =
+                        (CFNumberRef)CFDictionaryGetValue(d, kCGWindowNumber);
+                    if (numRef == NULL) continue;
+                    uint32_t cgid = 0;
+                    CFNumberGetValue(numRef, kCFNumberSInt32Type, &cgid);
+                    if (cgid == 0) continue;
+
+                    char *title = NULL;
+                    CFStringRef nameRef =
+                        (CFStringRef)CFDictionaryGetValue(d, kCGWindowName);
+                    if (nameRef != NULL) {
+                        title = dup_cfstring_utf8(nameRef);
+                    }
+                    if (title == NULL) title = strdup("");
+
+                    out_arr[count].pid       = pid;
+                    out_arr[count].cgid      = cgid;
+                    out_arr[count].title     = title;
+                    out_arr[count].app_name  = strdup(appName);
+                    out_arr[count].minimized = false;
+                    out_arr[count].hidden    = true;
+                    count++;
+                }
+                CFRelease(cgWindows);
+            }
+        }
+
+        free(appName);
     }
     return count;
 }
@@ -750,37 +851,64 @@ void gwim_free_window_entries(gwim_window_entry *arr, int count) {
 }
 
 // gwim_raise_window finds the window with matching CGWindowID inside the
-// process pid, raises it via AX, and activates the owning NSRunningApp.
+// process pid, un-hides the owning app and un-minimises the window if
+// needed, then raises it via AX and activates the NSRunningApplication.
 // Returns true on success.
+//
+// Hidden apps: NSRunningApplication.unhide makes the app's windows
+// reappear in the windowserver, but the AX tree may not be populated
+// for the just-unhid app on the first poll, so we retry a few times
+// with a short sleep between attempts.
+//
+// Minimised windows: AXMinimized must be set to false BEFORE kAXRaise
+// or the raise is a no-op (the window stays in the Dock).
 bool gwim_raise_window(pid_t pid, uint32_t cgid) {
-    AXUIElementRef appAX = AXUIElementCreateApplication(pid);
-    if (appAX == NULL) return false;
+    NSRunningApplication *app =
+        [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+    if (app != nil && [app isHidden]) {
+        [app unhide];
+    }
 
-    CFTypeRef windowsRef = NULL;
-    bool raised = false;
-    if (AXUIElementCopyAttributeValue(appAX, kAXWindowsAttribute, &windowsRef)
-        == kAXErrorSuccess && windowsRef != NULL) {
-        CFArrayRef windows = (CFArrayRef)windowsRef;
-        CFIndex n = CFArrayGetCount(windows);
-        for (CFIndex i = 0; i < n; i++) {
-            AXUIElementRef win =
-                (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
-            CGWindowID got = 0;
-            if (_AXUIElementGetWindow(win, &got) == kAXErrorSuccess &&
-                (uint32_t)got == cgid) {
-                AXUIElementPerformAction(win, kAXRaiseAction);
-                AXUIElementSetAttributeValue(win, kAXMainAttribute,
-                                              kCFBooleanTrue);
-                raised = true;
-                break;
-            }
+    AXUIElementRef appAX = AXUIElementCreateApplication(pid);
+    if (appAX == NULL) {
+        if (app != nil) {
+            [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
         }
-        CFRelease(windowsRef);
+        return false;
+    }
+
+    bool raised = false;
+    // Retry the AX lookup a few times — if we just called -unhide, the
+    // AX tree can take a few tens of ms to settle. Total budget ~150ms.
+    for (int attempt = 0; attempt < 4 && !raised; attempt++) {
+        CFTypeRef windowsRef = NULL;
+        if (AXUIElementCopyAttributeValue(appAX, kAXWindowsAttribute, &windowsRef)
+            == kAXErrorSuccess && windowsRef != NULL) {
+            CFArrayRef windows = (CFArrayRef)windowsRef;
+            CFIndex n = CFArrayGetCount(windows);
+            for (CFIndex i = 0; i < n; i++) {
+                AXUIElementRef win =
+                    (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+                CGWindowID got = 0;
+                if (_AXUIElementGetWindow(win, &got) == kAXErrorSuccess &&
+                    (uint32_t)got == cgid) {
+                    AXUIElementSetAttributeValue(win, kAXMinimizedAttribute,
+                                                  kCFBooleanFalse);
+                    AXUIElementPerformAction(win, kAXRaiseAction);
+                    AXUIElementSetAttributeValue(win, kAXMainAttribute,
+                                                  kCFBooleanTrue);
+                    raised = true;
+                    break;
+                }
+            }
+            CFRelease(windowsRef);
+        }
+        if (!raised) {
+            usleep(50 * 1000); // 50ms
+        }
     }
     CFRelease(appAX);
 
-    NSRunningApplication *app =
-        [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
     if (app != nil) {
         [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
     }

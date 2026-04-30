@@ -14,6 +14,8 @@ typedef struct {
     uint32_t cgid;
     char    *title;
     char    *app_name;
+    bool     minimized;
+    bool     hidden;
 } gwim_window_entry;
 
 extern int  gwim_enumerate_windows(gwim_window_entry *out_arr, int max,
@@ -22,7 +24,8 @@ extern int  gwim_enumerate_windows(gwim_window_entry *out_arr, int max,
 extern void gwim_free_window_entries(gwim_window_entry *arr, int count);
 extern bool gwim_raise_window(pid_t pid, uint32_t cgid);
 
-extern void gwim_overlay_show(int *pids, int *cgids, const char **titles_and_apps,
+extern void gwim_overlay_show(int *pids, int *cgids, int *dimmed_flags,
+                               const char **titles_and_apps,
                                int count, int selected);
 extern void gwim_overlay_update_selected(int idx);
 extern void gwim_overlay_hide(void);
@@ -228,8 +231,10 @@ func enumerateWindows() ([]wm.WindowInfo, []altswitch.Key, altswitch.Key) {
 	for i := 0; i < n; i++ {
 		e := (*C.gwim_window_entry)(unsafe.Add(unsafe.Pointer(arr), uintptr(i)*stride))
 		info := wm.WindowInfo{
-			PID:  int32(e.pid),
-			CGID: uint32(e.cgid),
+			PID:       int32(e.pid),
+			CGID:      uint32(e.cgid),
+			Minimized: bool(e.minimized),
+			Hidden:    bool(e.hidden),
 		}
 		if e.title != nil {
 			info.Title = C.GoString(e.title)
@@ -250,6 +255,7 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 	}
 	pids := make([]C.int, n)
 	cgids := make([]C.int, n)
+	dimmed := make([]C.int, n)
 	titlePtrs := make([]*C.char, n*2)
 	allocs := make([]*C.char, 0, n*2)
 	defer func() {
@@ -261,6 +267,9 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 	for i, it := range items {
 		pids[i] = C.int(it.PID)
 		cgids[i] = C.int(it.CGID)
+		if it.Minimized || it.Hidden {
+			dimmed[i] = 1
+		}
 		ct := C.CString(it.Title)
 		ca := C.CString(it.AppName)
 		allocs = append(allocs, ct, ca)
@@ -271,6 +280,7 @@ func showOverlay(items []wm.WindowInfo, selected int) {
 	C.gwim_overlay_show(
 		(*C.int)(unsafe.Pointer(&pids[0])),
 		(*C.int)(unsafe.Pointer(&cgids[0])),
+		(*C.int)(unsafe.Pointer(&dimmed[0])),
 		(**C.char)(unsafe.Pointer(&titlePtrs[0])),
 		C.int(n),
 		C.int(selected),

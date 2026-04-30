@@ -112,6 +112,14 @@ applications). Full requirements live in [`ALTTAB.md`](ALTTAB.md).
   corner; falls back to a centred app icon when capture fails (Screen
   Recording denied, occluded window, owning process gone, etc.). The
   selected window's full title is shown in a strip below the grid.
+* **Coverage:** every standard window of every regular app is enumerated,
+  **including minimised windows and the windows of hidden (Cmd+H) apps**.
+  These slots are drawn at reduced opacity so they're recognisable at a
+  glance; committing to one un-hides the owning app and un-minimises
+  the window before raising. For hidden apps where AX returns no
+  windows yet, the enumerator falls back to
+  `CGWindowListCopyWindowInfo` so the windows still appear in the
+  switcher.
 * **Event handling:** while the overlay is open, GWiM installs a
   `CGEventTap` at `kCGSessionEventTap` / `kCGHeadInsertEventTap` that
   intercepts Tab, Shift+Tab, Esc, Return, and the Option flag-changed

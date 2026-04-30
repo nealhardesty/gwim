@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Alt-Tab switcher now lists every standard window**, including
+  **minimised windows** (previously skipped as an MVP punt) and the
+  windows of **hidden (Cmd+H) apps**. Slots for those windows are drawn
+  at reduced opacity (≈45%) so users can still distinguish them from
+  on-screen windows at a glance. `gwim_raise_window` now un-hides the
+  owning `NSRunningApplication` and clears `kAXMinimizedAttribute`
+  before issuing `kAXRaiseAction`, retrying the AX lookup briefly while
+  the AX tree settles after un-hide. For hidden apps where AX returns
+  zero windows, the enumerator falls back to
+  `CGWindowListCopyWindowInfo(kCGWindowListOptionAll, …)` filtered by
+  pid + layer 0 + non-empty bounds so those windows still appear in
+  the overlay. New `wm.WindowInfo.Minimized` and `wm.WindowInfo.Hidden`
+  fields plumb the state through to the native overlay.
+
 ### Added
 
 - **Windows port** (`internal/platform/windows/`). GWiM now runs on
