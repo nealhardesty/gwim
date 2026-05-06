@@ -159,6 +159,12 @@ a real install.
 
 On Windows the resulting `gwim.exe` is fully functional on its own — pin
 it via the tray's **Open at Login** menu item to start it on every login.
+Both Makefile-driven Windows builds link with `-H=windowsgui` so launching
+`gwim.exe` (from Explorer, a Run-key entry, or a shortcut) does **not**
+pop a console window — only the tray icon appears. As a side-effect,
+`stdout` / `stderr` are not attached to a console, so the standard `log`
+package and `fmt.Println` go nowhere; if you need diagnostics, build with
+the flag stripped or route logging to a file.
 
 ### Option 2: `make app` + `make install` (recommended on macOS)
 

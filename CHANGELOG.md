@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Windows builds now link with `-H=windowsgui`** so `gwim.exe`
+  launches without spawning a console window when started from
+  Explorer, a desktop shortcut, or the `Run` registry key wired by the
+  tray's *Open at Login* item. Previously every launch popped a black
+  console alongside the tray icon. Applied uniformly: `make
+  build-windows` (cross-build) in the canonical Makefile and
+  `make -f Makefile.windows build` (native) both pass the flag, and
+  `make release` picks it up via its dependency on `build-windows`. The
+  flip detaches stdout/stderr from any console, so the standard `log`
+  package and `fmt.Println` are silent on Windows; this is acceptable
+  for a tray-resident agent and a future change can route diagnostics
+  to a file if needed.
+
 ### Fixed
 
 - **Window placement hotkeys now work in Chrome and other Chromium /

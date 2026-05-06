@@ -40,7 +40,14 @@ CMD           := .
 BUILD_DIR     := dist
 
 GO            := go
-LDFLAGS       := -s -w
+# `-H=windowsgui` selects the GUI subsystem in the PE header so the
+# resulting .exe launches without spawning a console window when started
+# from Explorer / a Run-key entry / a desktop shortcut. The trade-off is
+# that stdout / stderr are not attached to a console, so anything written
+# via `fmt.Println` or the standard `log` package goes nowhere. That is
+# acceptable for a tray-resident agent; if console diagnostics are ever
+# needed, drop the flag in a one-off build or route logging to a file.
+LDFLAGS       := -s -w -H=windowsgui
 BUILD_FLAGS   := -trimpath -ldflags "$(LDFLAGS)"
 
 VERSION_FILE  := version.go

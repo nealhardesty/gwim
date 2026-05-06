@@ -46,7 +46,16 @@ RELEASE_EXE   := $(BUILD_DIR)/$(BINARY)-$(VERSION).exe
 GO            := go
 GOFLAGS       :=
 LDFLAGS       := -s -w
+# `-H=windowsgui` selects the GUI subsystem in the PE header so the
+# resulting .exe launches without spawning a console window when started
+# from Explorer / a Run-key entry / a desktop shortcut. The trade-off is
+# that stdout / stderr are not attached to a console — anything written
+# via `fmt.Println` or the standard `log` package goes nowhere. That is
+# acceptable for a tray-resident agent; if console diagnostics are ever
+# needed, drop the flag in a one-off build or route logging to a file.
+LDFLAGS_WIN   := $(LDFLAGS) -H=windowsgui
 BUILD_FLAGS   := -trimpath -ldflags "$(LDFLAGS)"
+BUILD_FLAGS_WIN := -trimpath -ldflags "$(LDFLAGS_WIN)"
 
 GREEN := \033[32m
 BOLD  := \033[1m
@@ -108,7 +117,7 @@ $(BUILD_DIR)/$(BINARY): $(shell find . \( -name '*.go' -o -name '*.m' \) -not -p
 build-windows: $(EMBED_ICONS) ## Cross-compile a Windows binary into ./dist/gwim.exe
 	@mkdir -p $(BUILD_DIR)
 	@echo "==> Cross-building $(BINARY_WIN) $(VERSION)"
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o $(BUILD_DIR)/$(BINARY_WIN) $(CMD)
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS_WIN) -o $(BUILD_DIR)/$(BINARY_WIN) $(CMD)
 
 .PHONY: run
 run: build ## Build then launch the binary in the foreground (logs to stdout)
