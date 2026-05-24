@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Alt-Tab switcher simplified to a single flat MRU pane scoped to the
+  current workspace.** The earlier multi-Space, per-display grouped
+  layout (with section headers like `D1·S2 · current` and dividers
+  between groups) is gone. The overlay still mirrors to every connected
+  display, still shows live thumbnails + app icon badges, and still
+  dims minimised / hidden-app windows on the current workspace — but
+  the slot list is now a single MRU-ordered grid, restricted to
+  windows on each display's currently-visible Space plus sticky
+  (all-Spaces) windows. Removed the `SpaceID`, `GroupRank`, `Sticky`,
+  and `SpaceLabel` fields from `wm.WindowInfo` and deleted
+  `internal/altswitch/group.go`. Set the workspace filter via
+  `CGSCopyManagedDisplaySpaces` + `CGSCopySpacesForWindows`; if those
+  private CGS APIs ever stop returning data the filter short-circuits
+  to keep every window rather than show an empty switcher.
+
 - **Windows builds now link with `-H=windowsgui`** so `gwim.exe`
   launches without spawning a console window when started from
   Explorer, a desktop shortcut, or the `Run` registry key wired by the

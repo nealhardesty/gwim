@@ -1,5 +1,5 @@
 // altswitch_native.m — macOS native implementation of the Alt-Tab window
-// switcher (per ALTTAB.md / DESIGN.md §3.7).
+// switcher (per DESIGN.md §3.7).
 //
 // Compiled by cgo as Objective-C alongside the Go files in this package
 // because @interface / @implementation cannot live in a cgo preamble (cgo
@@ -9,29 +9,27 @@
 //
 // Five responsibilities:
 //
-//  1. Borderless NSWindow overlay(s) on the main thread — one mirrored
-//     panel per NSScreen so the switcher is visible on every display.
-//     The panel renders a wrapping grid of slots GROUPED BY macOS Space:
-//     a small label header per group ("D1·S2", "Sticky", …) with thin
-//     dividers between groups. Each slot shows a live window thumbnail
-//     (when Screen Recording is granted) plus the application icon as a
-//     small badge; falls back to the icon alone when capture is
-//     unavailable.
+//  1. Borderless NSWindow overlay on the main thread, mirrored to every
+//     connected NSScreen so the switcher is visible on every display.
+//     The panel renders a single flat wrapping grid of slots in MRU
+//     order. Each slot shows a live window thumbnail (when Screen
+//     Recording is granted) plus the application icon as a small badge;
+//     falls back to the icon alone when capture is unavailable.
 //
 //  2. CGEventTap installed only while the overlay is open. Captures Tab,
 //     Shift+Tab, Esc, Return, and the Option flag-changed event so the
 //     Go controller can advance / commit / cancel. Overlay windows accept
 //     mouse events; clicking a slot commits like Return.
 //
-//  3. CGWindowList-driven enumeration covering every Space (the
-//     primary source of truth — AX is unreliable for windows on other
-//     Spaces, especially native-fullscreen Spaces). AX is consulted as
-//     an enrichment layer for subrole / minimised / title.
+//  3. CGWindowList-driven enumeration filtered to the current workspace:
+//     windows on any display's currently-visible Space plus sticky
+//     (all-Spaces) windows. AX is consulted as an enrichment layer for
+//     subrole / minimised / title.
 //
-//  4. CGS Spaces metadata — private but long-stable APIs used by every
+//  4. CGS Spaces queries — private but long-stable APIs used by every
 //     comparable open-source switcher (Yabai, Hammerspoon, AltTab.app)
-//     to discover which Space each window lives on, build per-display
-//     ordering, and detect sticky (all-Spaces) windows.
+//     to discover which Space each window lives on and to learn each
+//     display's current Space (for the workspace filter).
 //
 //  5. Screen Recording permission probe + request, mirroring the
 //     accessibility-permission helpers used by the rest of GWiM.
@@ -60,26 +58,20 @@ extern AXError _AXUIElementGetWindow(AXUIElementRef element, CGWindowID *out);
 // CGS Spaces — private CoreGraphics APIs.
 // =====================================================================
 //
-// These four entry points have been stable since macOS 10.7 and are used
-// by Yabai, Hammerspoon, AltTab.app, Rectangle, etc. They are weak-linked
-// from CoreGraphics (already in our framework set via Cocoa). If a future
-// macOS removes them, gwim_enumerate_windows degrades gracefully: every
-// window lands in a single "Spaces" group and the rest of the switcher
-// keeps working.
+// These entry points have been stable since macOS 10.7 and are used by
+// Yabai, Hammerspoon, AltTab.app, Rectangle, etc. They are weak-linked
+// from CoreGraphics (already in our framework set via Cocoa). If a
+// future macOS removes them, gwim_enumerate_windows degrades gracefully:
+// the workspace filter short-circuits to "keep everything" and the rest
+// of the switcher keeps working.
 extern int        CGSMainConnectionID(void);
 extern CFArrayRef CGSCopySpacesForWindows(int cid, int mask, CFArrayRef windowIDs);
 extern CFArrayRef CGSCopyManagedDisplaySpaces(int cid);
-extern uint64_t   CGSGetActiveSpace(int cid);
 
 // kCGSAllSpacesMask = 0x7 is the canonical value (USER | OTHERS | CURRENT)
 // observed across Yabai / AltTab / Hammerspoon. Using 0xFFFFFFFF works
 // too but adds nothing.
 static const int kGwimAllSpacesMask = 0x7;
-
-// Type code returned by macOS for native-fullscreen Spaces in the
-// "type" field of CGSCopyManagedDisplaySpaces entries. Used only for
-// the human-readable group label.
-static const int kGwimSpaceTypeFullscreen = 4;
 
 // =====================================================================
 // gwim_window_entry — must match the typedef in altswitch.go's cgo
@@ -93,10 +85,6 @@ typedef struct {
     char    *app_name;     // strdup'd; freed by gwim_free_window_entries
     bool     minimized;    // window is currently minimized to the Dock
     bool     hidden;       // owning app is hidden via Cmd+H / NSRunningApplication.hide
-    uint64_t space_id;     // CGS Space identifier (0 if unknown)
-    int32_t  group_rank;   // visual group ordering: smaller = appears earlier
-    bool     sticky;       // window appears on every Space (CanJoinAllSpaces)
-    char    *space_label;  // strdup'd group label, e.g. "D1\u00b7S2", "Sticky", "FS"
 } gwim_window_entry;
 
 // =====================================================================
@@ -104,13 +92,11 @@ typedef struct {
 // paint stay in lock-step. Slots are 3:2 to match typical window aspect.
 // =====================================================================
 
-static const CGFloat kGwimSlotW         = 144.0;
-static const CGFloat kGwimSlotH         = 96.0;
-static const CGFloat kGwimSlotPad       = 18.0;
-static const CGFloat kGwimTitleH        = 30.0;
-static const CGFloat kGwimGroupHeaderH  = 22.0;
-static const CGFloat kGwimGroupGapV     = 12.0;
-static const int     kGwimGroupMaxCols  = 6;
+static const CGFloat kGwimSlotW   = 144.0;
+static const CGFloat kGwimSlotH   = 96.0;
+static const CGFloat kGwimSlotPad = 18.0;
+static const CGFloat kGwimTitleH  = 30.0;
+static const int     kGwimMaxCols = 6;
 static const CGFloat kGwimOverlayMaxScreenFraction = 0.9;
 
 // =====================================================================
@@ -129,17 +115,6 @@ static const CGFloat kGwimOverlayMaxScreenFraction = 0.9;
 /// and hit testing. Re-derived in gwim_overlay_show every time the slot
 /// list changes.
 @property (nonatomic, strong) NSArray *slotRects;
-/// Group label NSString for each slot (same string for every slot in a
-/// group). Drawing detects boundaries by string equality with the
-/// previous slot's label.
-@property (nonatomic, strong) NSArray *slotGroupLabels;
-/// Per-slot frame for the group header. NSValue-boxed NSRect, NSZeroRect
-/// when the slot is not the first in its group.
-@property (nonatomic, strong) NSArray *groupHeaderRects;
-/// Per-slot frame for the divider line drawn AFTER the group containing
-/// this slot. NSZeroRect except on the last slot of each group (omitted
-/// for the final group so we don't draw a trailing divider).
-@property (nonatomic, strong) NSArray *groupDividerRects;
 @property (nonatomic) NSInteger selected;
 /// Uniform scale vs kGwimSlot* base geometry (set in gwim_overlay_show).
 @property (nonatomic) CGFloat layoutScale;
@@ -190,33 +165,6 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
     CGFloat iconSize      = 64.0 * sc;
     CGFloat placeholderR  = 10.0 * sc;
     CGFloat titleFont     = MAX(11.0, round(14.0 * sc));
-    CGFloat headerFont    = MAX(10.0, round(12.0 * sc));
-    CGFloat dividerAlpha  = 0.18;
-
-    // Group dividers — drawn underneath the slots so they don't interfere
-    // with the selection ring on the highlighted slot.
-    for (NSInteger i = 0; i < n; i++) {
-        NSRect divider = [(NSValue *)self.groupDividerRects[i] rectValue];
-        if (NSIsEmptyRect(divider)) continue;
-        [[NSColor colorWithCalibratedWhite:1.0 alpha:dividerAlpha] setFill];
-        NSRectFill(divider);
-    }
-
-    // Group headers — small label per group, drawn in muted white.
-    NSDictionary *headerAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:headerFont
-                                               weight:NSFontWeightSemibold],
-        NSForegroundColorAttributeName:
-            [NSColor colorWithCalibratedWhite:1.0 alpha:0.75],
-    };
-    for (NSInteger i = 0; i < n; i++) {
-        NSRect headerRect = [(NSValue *)self.groupHeaderRects[i] rectValue];
-        if (NSIsEmptyRect(headerRect)) continue;
-        NSString *label = (i < (NSInteger)self.slotGroupLabels.count)
-            ? (NSString *)self.slotGroupLabels[i] : @"";
-        if (label.length == 0) continue;
-        [label drawAtPoint:headerRect.origin withAttributes:headerAttrs];
-    }
 
     for (NSInteger i = 0; i < n; i++) {
         NSRect slotRect = [(NSValue *)self.slotRects[i] rectValue];
@@ -340,155 +288,74 @@ static NSRect aspectFitRect(NSSize imageSize, NSRect bounds) {
 @end
 
 // =====================================================================
-// Overlay layout — group-aware. Walks the per-slot group label list,
-// emitting a header-row + slot rows for each contiguous group, and a
-// thin divider between groups.
+// Overlay layout — single flat MRU grid. N slots wrap at kGwimMaxCols.
+// Rows are centred horizontally; rects are returned in NSView's
+// bottom-origin coordinates so the caller can paint them directly.
 // =====================================================================
 
 typedef struct {
-    CGFloat width;       // intrinsic width (max group row width)
-    CGFloat height;      // intrinsic height (sum of all group blocks)
-    NSArray *slotRects;          // NSValue (NSRect) per slot
-    NSArray *headerRects;        // NSValue (NSRect) per slot — only set on group's first slot
-    NSArray *dividerRects;       // NSValue (NSRect) per slot — only set on group's last slot (except final)
+    CGFloat width;       // intrinsic panel width
+    CGFloat height;      // intrinsic panel height
+    NSArray *slotRects;  // NSValue (NSRect) per slot
 } gwim_layout_result;
 
-static gwim_layout_result gwim_compute_layout(NSArray *slotGroupLabels, CGFloat scale) {
-    NSInteger n = (NSInteger)[slotGroupLabels count];
+static gwim_layout_result gwim_compute_layout(NSInteger slotCount, CGFloat scale) {
     gwim_layout_result out;
-    NSMutableArray *slotRects    = [NSMutableArray arrayWithCapacity:n];
-    NSMutableArray *headerRects  = [NSMutableArray arrayWithCapacity:n];
-    NSMutableArray *dividerRects = [NSMutableArray arrayWithCapacity:n];
-    for (NSInteger i = 0; i < n; i++) {
-        [slotRects    addObject:[NSValue valueWithRect:NSZeroRect]];
-        [headerRects  addObject:[NSValue valueWithRect:NSZeroRect]];
-        [dividerRects addObject:[NSValue valueWithRect:NSZeroRect]];
+    NSMutableArray *slotRects = [NSMutableArray arrayWithCapacity:slotCount];
+    for (NSInteger i = 0; i < slotCount; i++) {
+        [slotRects addObject:[NSValue valueWithRect:NSZeroRect]];
     }
     out.slotRects = slotRects;
-    out.headerRects = headerRects;
-    out.dividerRects = dividerRects;
     out.width = 0;
     out.height = 0;
-    if (n == 0) return out;
+    if (slotCount <= 0) {
+        out.width = 320;
+        out.height = 180;
+        return out;
+    }
 
     CGFloat sc       = scale;
     if (sc < 1e-6) sc = 1.0;
     CGFloat slotW    = kGwimSlotW * sc;
     CGFloat slotH    = kGwimSlotH * sc;
     CGFloat pad      = kGwimSlotPad * sc;
-    CGFloat headerH  = kGwimGroupHeaderH * sc;
-    CGFloat groupGap = kGwimGroupGapV * sc;
     CGFloat outerPad = pad;
     CGFloat titleH   = kGwimTitleH * sc;
 
-    // Find group boundaries by scanning the per-slot labels for changes.
-    NSMutableArray<NSNumber *> *groupStarts = [NSMutableArray array];
-    NSString *prev = nil;
-    for (NSInteger i = 0; i < n; i++) {
-        NSString *label = (NSString *)slotGroupLabels[i];
-        if (i == 0 || ![label isEqualToString:prev]) {
-            [groupStarts addObject:@(i)];
-        }
-        prev = label;
-    }
+    NSInteger cols = slotCount < kGwimMaxCols ? slotCount : kGwimMaxCols;
+    NSInteger rows = (slotCount + cols - 1) / cols;
 
-    NSInteger ng = (NSInteger)groupStarts.count;
-
-    // First pass: compute intrinsic width = widest single row across all
-    // groups. Each group wraps at kGwimGroupMaxCols.
-    CGFloat maxRowSlots = 0;
-    for (NSInteger g = 0; g < ng; g++) {
-        NSInteger start = groupStarts[g].integerValue;
-        NSInteger end   = (g + 1 < ng) ? groupStarts[g + 1].integerValue : n;
-        NSInteger size  = end - start;
-        if (size <= 0) continue;
-        NSInteger rowSlots = size < kGwimGroupMaxCols ? size : kGwimGroupMaxCols;
-        if (rowSlots > maxRowSlots) maxRowSlots = rowSlots;
-    }
-    if (maxRowSlots == 0) maxRowSlots = 1;
-    CGFloat contentW = maxRowSlots * slotW + (maxRowSlots - 1) * pad;
+    CGFloat contentW = cols * slotW + (cols - 1) * pad;
+    CGFloat contentH = rows * slotH + (rows - 1) * pad;
     CGFloat panelW   = contentW + 2 * outerPad;
+    CGFloat panelH   = contentH + 2 * outerPad + titleH + outerPad / 2.0;
     if (panelW < 320) panelW = 320;
-
-    // Second pass: lay out each group from the top of the panel down,
-    // recording per-slot rects. Y origin is unflipped (NSView default), so
-    // we work top-to-bottom by tracking the current "top" Y and decrementing.
-    //
-    // We don't yet know panelH; build the layout in "panel-local top-anchored"
-    // coordinates with y=0 at the top edge, then translate at the end.
-    CGFloat top = 0;            // distance below panel top
-    top += outerPad;            // small breathing room above first header
-
-    for (NSInteger g = 0; g < ng; g++) {
-        NSInteger start = groupStarts[g].integerValue;
-        NSInteger end   = (g + 1 < ng) ? groupStarts[g + 1].integerValue : n;
-        NSInteger size  = end - start;
-        if (size <= 0) continue;
-
-        // Grid is centred horizontally inside the panel; gridLeft is the
-        // left edge of every row in this group.
-        CGFloat gridLeft = outerPad;
-        NSRect headerR = NSMakeRect(gridLeft, top, contentW, headerH);
-        headerRects[start] = [NSValue valueWithRect:headerR];
-        top += headerH;
-
-        NSInteger cols = size < kGwimGroupMaxCols ? size : kGwimGroupMaxCols;
-        NSInteger rows = (size + cols - 1) / cols;
-
-        for (NSInteger row = 0; row < rows; row++) {
-            NSInteger rowStart = row * cols;
-            NSInteger rowSize  = MIN(cols, size - rowStart);
-            // Left-align row within the group's content rect (consistent
-            // start for partially-filled rows).
-            for (NSInteger c = 0; c < rowSize; c++) {
-                NSInteger slotIdx = start + rowStart + c;
-                CGFloat x = gridLeft + c * (slotW + pad);
-                NSRect r = NSMakeRect(x, top, slotW, slotH);
-                slotRects[slotIdx] = [NSValue valueWithRect:r];
-            }
-            top += slotH;
-            if (row + 1 < rows) top += pad;
-        }
-
-        // Divider after this group (skip after the last group).
-        if (g + 1 < ng) {
-            top += groupGap / 2.0;
-            NSRect divR = NSMakeRect(gridLeft, top, contentW, MAX(1.0, 1.0 * sc));
-            dividerRects[end - 1] = [NSValue valueWithRect:divR];
-            top += MAX(1.0, 1.0 * sc);
-            top += groupGap / 2.0;
-        }
-    }
-
-    top += outerPad;            // top padding above title strip
-    top += titleH;              // bottom title strip
-    top += outerPad / 2.0;      // bottom margin
-
-    CGFloat panelH = top;
     if (panelH < 180) panelH = 180;
 
-    // Now flip Y from "top-anchored" to NSView's bottom-origin coordinates.
-    // For each rect: newY = panelH - (oldY + rect.height).
-    NSMutableArray *flipSlots    = [NSMutableArray arrayWithCapacity:n];
-    NSMutableArray *flipHeaders  = [NSMutableArray arrayWithCapacity:n];
-    NSMutableArray *flipDividers = [NSMutableArray arrayWithCapacity:n];
-    for (NSInteger i = 0; i < n; i++) {
-        NSRect r = [slotRects[i] rectValue];
-        NSRect h = [headerRects[i] rectValue];
-        NSRect d = [dividerRects[i] rectValue];
-        if (!NSIsEmptyRect(r)) r.origin.y = panelH - r.origin.y - r.size.height;
-        if (!NSIsEmptyRect(h)) h.origin.y = panelH - h.origin.y - h.size.height;
-        if (!NSIsEmptyRect(d)) d.origin.y = panelH - d.origin.y - d.size.height;
-        [flipSlots    addObject:[NSValue valueWithRect:r]];
-        [flipHeaders  addObject:[NSValue valueWithRect:h]];
-        [flipDividers addObject:[NSValue valueWithRect:d]];
+    // Top edge of the slot grid in NSView (bottom-origin) coordinates.
+    // The title strip sits at the very bottom; the grid sits above it,
+    // centred horizontally inside the panel.
+    CGFloat gridTopY  = panelH - outerPad - slotH;
+    CGFloat gridLeftX = (panelW - contentW) / 2.0;
+
+    for (NSInteger row = 0; row < rows; row++) {
+        NSInteger rowStart = row * cols;
+        NSInteger rowSize  = MIN(cols, slotCount - rowStart);
+        // Centre each row inside contentW (matters for the partially
+        // filled final row).
+        CGFloat rowW = rowSize * slotW + (rowSize - 1) * pad;
+        CGFloat rowLeft = gridLeftX + (contentW - rowW) / 2.0;
+        CGFloat y = gridTopY - row * (slotH + pad);
+        for (NSInteger c = 0; c < rowSize; c++) {
+            NSInteger slotIdx = rowStart + c;
+            CGFloat x = rowLeft + c * (slotW + pad);
+            slotRects[slotIdx] = [NSValue valueWithRect:NSMakeRect(x, y, slotW, slotH)];
+        }
     }
 
-    out.width        = panelW;
-    out.height       = panelH;
-    out.slotRects    = flipSlots;
-    out.headerRects  = flipHeaders;
-    out.dividerRects = flipDividers;
+    out.width     = panelW;
+    out.height    = panelH;
+    out.slotRects = slotRects;
     return out;
 }
 
@@ -618,7 +485,6 @@ void gwim_overlay_show(int *pids,
                        int *cgids,
                        int *dimmed_flags,
                        const char **titles_and_apps,
-                       const char **group_labels,
                        int count,
                        int selected) {
     if (count <= 0) return;
@@ -627,7 +493,6 @@ void gwim_overlay_show(int *pids,
     NSMutableArray *titleArr = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *appArr   = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *dimArr   = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray *labelArr = [NSMutableArray arrayWithCapacity:count];
 
     for (int i = 0; i < count; i++) {
         pid_t pid = (pid_t)pids[i];
@@ -643,9 +508,6 @@ void gwim_overlay_show(int *pids,
 
         BOOL dim = (dimmed_flags != NULL) && (dimmed_flags[i] != 0);
         [dimArr addObject:@(dim)];
-
-        const char *g = (group_labels != NULL) ? group_labels[i] : "";
-        [labelArr addObject:(g ? [NSString stringWithUTF8String:g] : @"")];
     }
 
     // Batch-capture thumbnails. Returns NSNull* placeholders for windows
@@ -658,7 +520,7 @@ void gwim_overlay_show(int *pids,
     // Compute layout once at unit scale to learn intrinsic dims; the
     // per-screen scaling happens inside the dispatch block below where we
     // know each screen's visibleFrame.
-    gwim_layout_result baseLayout = gwim_compute_layout(labelArr, 1.0);
+    gwim_layout_result baseLayout = gwim_compute_layout(count, 1.0);
     CGFloat intrinsicW = baseLayout.width;
     CGFloat intrinsicH = baseLayout.height;
     if (intrinsicW < 320) intrinsicW = 320;
@@ -710,7 +572,7 @@ void gwim_overlay_show(int *pids,
                     kGwimOverlayMaxScreenFraction * vf.size.height / intrinsicH);
             if (s > 1.0) s = 1.0;  // never upscale past native geometry
             if (s < 0.4) s = 0.4;  // floor: ridiculous overlays still legible
-            gwim_layout_result laid = gwim_compute_layout(labelArr, s);
+            gwim_layout_result laid = gwim_compute_layout(count, s);
             CGFloat width  = laid.width;
             CGFloat height = laid.height;
             CGFloat ox = NSMinX(vf) + (NSWidth(vf) - width) / 2.0;
@@ -728,9 +590,6 @@ void gwim_overlay_show(int *pids,
             view.appNames = appArr;
             view.dimmed = dimArr;
             view.slotRects = laid.slotRects;
-            view.slotGroupLabels = labelArr;
-            view.groupHeaderRects = laid.headerRects;
-            view.groupDividerRects = laid.dividerRects;
             view.selected = selected;
             view.layoutScale = s;
             [view setNeedsDisplay:YES];
@@ -878,157 +737,41 @@ static uint64_t gwim_space_for_window(int cid, uint32_t cgid, bool *out_sticky) 
     return result;
 }
 
-// SpaceMeta describes one (display, space) tuple discovered via
-// CGSCopyManagedDisplaySpaces. Used for ranking groups and labelling
-// them in the overlay.
-typedef struct {
-    uint64_t space_id;
-    int      display_index;
-    int      space_order;       // 0-based position within the display
-    int      space_type;        // CGSSpaceType: 0=user, 4=fullscreen
-    bool     is_current;        // currently visible on this display
-    bool     is_focused;        // matches the focused window's space
-} gwim_space_meta;
-
-// gwim_collect_space_metadata walks CGSCopyManagedDisplaySpaces and
-// builds a map from space_id -> gwim_space_meta. Out params are caller-
-// owned and freed via free(). Returns the number of spaces discovered.
+// gwim_collect_current_space_ids walks CGSCopyManagedDisplaySpaces and
+// writes the "Current Space" ID of each connected display into out_ids
+// (capped at max). Returns the count.
 //
-// also returns the focused space id via out_focused_space (0 if none).
-static int gwim_collect_space_metadata(int cid,
-                                        uint64_t focused_space_id,
-                                        bool single_display_only,
-                                        gwim_space_meta **out_metas) {
-    *out_metas = NULL;
+// The workspace filter in gwim_enumerate_windows uses this set to decide
+// which windows belong to the user's *current* workspace across every
+// monitor: a window is kept iff it's sticky (all-Spaces) or its Space ID
+// matches one of these.
+static int gwim_collect_current_space_ids(int cid, uint64_t *out_ids, int max) {
+    if (out_ids == NULL || max <= 0) return 0;
     CFArrayRef displays = CGSCopyManagedDisplaySpaces(cid);
     if (displays == NULL) return 0;
 
+    int count = 0;
     CFIndex displayCount = CFArrayGetCount(displays);
-
-    // First pass: total space count.
-    int total = 0;
-    for (CFIndex d = 0; d < displayCount; d++) {
+    for (CFIndex d = 0; d < displayCount && count < max; d++) {
         CFDictionaryRef dd = (CFDictionaryRef)CFArrayGetValueAtIndex(displays, d);
         if (dd == NULL) continue;
-        CFArrayRef sp = (CFArrayRef)CFDictionaryGetValue(dd, CFSTR("Spaces"));
-        if (sp == NULL) continue;
-        total += (int)CFArrayGetCount(sp);
-    }
-    if (total == 0) {
-        CFRelease(displays);
-        return 0;
-    }
-
-    gwim_space_meta *metas = (gwim_space_meta *)calloc(total, sizeof(gwim_space_meta));
-    if (metas == NULL) {
-        CFRelease(displays);
-        return 0;
-    }
-
-    int idx = 0;
-    for (CFIndex d = 0; d < displayCount; d++) {
-        CFDictionaryRef dd = (CFDictionaryRef)CFArrayGetValueAtIndex(displays, d);
-        if (dd == NULL) continue;
-        CFArrayRef sp = (CFArrayRef)CFDictionaryGetValue(dd, CFSTR("Spaces"));
-        if (sp == NULL) continue;
-
-        // "Current Space" is the one currently visible on this display.
-        uint64_t currentSpaceID = 0;
-        CFDictionaryRef curr = (CFDictionaryRef)CFDictionaryGetValue(dd, CFSTR("Current Space"));
-        if (curr != NULL) {
-            CFNumberRef sid = (CFNumberRef)CFDictionaryGetValue(curr, CFSTR("ManagedSpaceID"));
-            if (sid == NULL) sid = (CFNumberRef)CFDictionaryGetValue(curr, CFSTR("id64"));
-            if (sid != NULL) CFNumberGetValue(sid, kCFNumberSInt64Type, &currentSpaceID);
+        CFDictionaryRef curr =
+            (CFDictionaryRef)CFDictionaryGetValue(dd, CFSTR("Current Space"));
+        if (curr == NULL) continue;
+        CFNumberRef sid = (CFNumberRef)CFDictionaryGetValue(curr, CFSTR("ManagedSpaceID"));
+        if (sid == NULL) sid = (CFNumberRef)CFDictionaryGetValue(curr, CFSTR("id64"));
+        if (sid == NULL) continue;
+        uint64_t sval = 0;
+        CFNumberGetValue(sid, kCFNumberSInt64Type, &sval);
+        if (sval == 0) continue;
+        bool dup = false;
+        for (int i = 0; i < count; i++) {
+            if (out_ids[i] == sval) { dup = true; break; }
         }
-
-        CFIndex spc = CFArrayGetCount(sp);
-        for (CFIndex s = 0; s < spc; s++) {
-            CFDictionaryRef spd = (CFDictionaryRef)CFArrayGetValueAtIndex(sp, s);
-            if (spd == NULL) continue;
-            CFNumberRef sid = (CFNumberRef)CFDictionaryGetValue(spd, CFSTR("ManagedSpaceID"));
-            if (sid == NULL) sid = (CFNumberRef)CFDictionaryGetValue(spd, CFSTR("id64"));
-            uint64_t sval = 0;
-            if (sid != NULL) CFNumberGetValue(sid, kCFNumberSInt64Type, &sval);
-
-            int stype = 0;
-            CFNumberRef tn = (CFNumberRef)CFDictionaryGetValue(spd, CFSTR("type"));
-            if (tn != NULL) CFNumberGetValue(tn, kCFNumberIntType, &stype);
-
-            metas[idx].space_id      = sval;
-            metas[idx].display_index = (int)d;
-            metas[idx].space_order   = (int)s;
-            metas[idx].space_type    = stype;
-            metas[idx].is_current    = (sval == currentSpaceID && sval != 0);
-            metas[idx].is_focused    = (focused_space_id != 0 && sval == focused_space_id);
-            idx++;
-        }
+        if (!dup) out_ids[count++] = sval;
     }
-
     CFRelease(displays);
-
-    // If we only want to surface single-display labels (suppress D{n}
-    // prefix when there's just one display), the caller can detect that
-    // by inspecting the metas. We don't use the flag here yet but keep
-    // it for symmetry with the public surface.
-    (void)single_display_only;
-
-    *out_metas = metas;
-    return idx;
-}
-
-static const gwim_space_meta *gwim_lookup_space(const gwim_space_meta *metas,
-                                                  int meta_count,
-                                                  uint64_t space_id) {
-    if (metas == NULL || space_id == 0) return NULL;
-    for (int i = 0; i < meta_count; i++) {
-        if (metas[i].space_id == space_id) return &metas[i];
-    }
-    return NULL;
-}
-
-// gwim_format_space_label builds the human-readable label for a group,
-// honouring the single-display shorthand. Returns a strdup'd string.
-static char *gwim_format_space_label(const gwim_space_meta *meta,
-                                       int display_count,
-                                       bool sticky) {
-    char buf[64];
-    if (sticky) {
-        return strdup("Sticky");
-    }
-    if (meta == NULL) {
-        return strdup("Spaces");
-    }
-    const char *suffix = (meta->space_type == kGwimSpaceTypeFullscreen) ? " · FS" : "";
-    if (display_count <= 1) {
-        snprintf(buf, sizeof(buf), "Space %d%s%s",
-                 meta->space_order + 1,
-                 meta->is_current ? " · current" : "",
-                 suffix);
-    } else {
-        snprintf(buf, sizeof(buf), "D%d · S%d%s%s",
-                 meta->display_index + 1,
-                 meta->space_order + 1,
-                 meta->is_current ? " · current" : "",
-                 suffix);
-    }
-    return strdup(buf);
-}
-
-// gwim_compute_group_rank assigns the visual order rank for a group.
-// Lower = earlier in the overlay. The focused space sits at rank 0,
-// followed by other current-on-display spaces, then non-current spaces
-// in (display, space) order, then sticky last.
-static int32_t gwim_compute_group_rank(const gwim_space_meta *meta,
-                                        bool sticky,
-                                        int display_count) {
-    if (sticky) return INT32_MAX;
-    if (meta == NULL) return INT32_MAX - 1;
-    if (meta->is_focused) return 0;
-    int displayBlock = 1 + meta->display_index;
-    // Reserve top-of-display slots for "current on display" spaces.
-    int withinDisplay = meta->is_current ? 0 : (1 + meta->space_order);
-    return (int32_t)(displayBlock * 1000 + withinDisplay);
-    (void)display_count;
+    return count;
 }
 
 // =====================================================================
@@ -1294,16 +1037,12 @@ int gwim_enumerate_windows(gwim_window_entry *out_arr,
         bool minimized = (axInfo != NULL && axInfo->minimized);
         bool hidden    = (bool)[app isHidden];
 
-        out_arr[count].pid         = ownerPid;
-        out_arr[count].cgid        = cgid;
-        out_arr[count].title       = title;
-        out_arr[count].app_name    = appName;
-        out_arr[count].minimized   = minimized;
-        out_arr[count].hidden      = hidden;
-        out_arr[count].space_id    = 0;        // filled below
-        out_arr[count].group_rank  = INT32_MAX;
-        out_arr[count].sticky      = false;
-        out_arr[count].space_label = NULL;
+        out_arr[count].pid       = ownerPid;
+        out_arr[count].cgid      = cgid;
+        out_arr[count].title     = title;
+        out_arr[count].app_name  = appName;
+        out_arr[count].minimized = minimized;
+        out_arr[count].hidden    = hidden;
         count++;
     }
     CFRelease(cgWindows);
@@ -1316,63 +1055,47 @@ int gwim_enumerate_windows(gwim_window_entry *out_arr,
 
     if (count == 0) return 0;
 
-    // Spaces metadata — cheap to call once.
+    // Workspace filter: collect each display's currently-visible Space,
+    // then drop any window that doesn't belong to one of those Spaces
+    // (sticky / all-Spaces windows are always kept). If the CGS calls
+    // fail (private API removed in a future macOS), we leave the list
+    // unfiltered rather than show an empty switcher.
     int cid = CGSMainConnectionID();
-
-    // Per-window space lookup. cgid==0 cases were filtered above so this
-    // always has a real id.
-    for (int i = 0; i < count; i++) {
-        bool sticky = false;
-        out_arr[i].space_id = gwim_space_for_window(cid, out_arr[i].cgid, &sticky);
-        out_arr[i].sticky   = sticky;
-    }
-
-    // Resolve the focused space id from the focused window we discovered
-    // earlier (or fall back to CGSGetActiveSpace if AX failed).
-    uint64_t focusedSpaceID = 0;
-    if (out_focused_cgid != NULL && *out_focused_cgid != 0) {
-        bool ignored = false;
-        focusedSpaceID = gwim_space_for_window(cid, *out_focused_cgid, &ignored);
-    }
-    if (focusedSpaceID == 0) {
-        focusedSpaceID = CGSGetActiveSpace(cid);
-    }
-
-    gwim_space_meta *metas = NULL;
-    int metaCount = gwim_collect_space_metadata(cid, focusedSpaceID, false, &metas);
-
-    // How many displays are involved? Influences label format.
-    int displayCount = 0;
-    for (int i = 0; i < metaCount; i++) {
-        if (metas[i].display_index + 1 > displayCount) {
-            displayCount = metas[i].display_index + 1;
+    uint64_t currentSpaces[16] = {0};
+    int currentSpaceCount = gwim_collect_current_space_ids(
+        cid, currentSpaces, (int)(sizeof(currentSpaces) / sizeof(currentSpaces[0])));
+    if (currentSpaceCount > 0) {
+        int kept = 0;
+        for (int i = 0; i < count; i++) {
+            bool sticky = false;
+            uint64_t sid = gwim_space_for_window(cid, out_arr[i].cgid, &sticky);
+            bool keep = sticky;
+            if (!keep && sid != 0) {
+                for (int s = 0; s < currentSpaceCount; s++) {
+                    if (currentSpaces[s] == sid) { keep = true; break; }
+                }
+            }
+            if (keep) {
+                if (kept != i) out_arr[kept] = out_arr[i];
+                kept++;
+            } else {
+                if (out_arr[i].title)    free(out_arr[i].title);
+                if (out_arr[i].app_name) free(out_arr[i].app_name);
+            }
         }
-    }
-    if (displayCount == 0) displayCount = 1;
-
-    // Build per-window group_rank + label.
-    for (int i = 0; i < count; i++) {
-        const gwim_space_meta *m =
-            gwim_lookup_space(metas, metaCount, out_arr[i].space_id);
-        out_arr[i].group_rank  =
-            gwim_compute_group_rank(m, out_arr[i].sticky, displayCount);
-        out_arr[i].space_label =
-            gwim_format_space_label(m, displayCount, out_arr[i].sticky);
+        count = kept;
     }
 
-    if (metas != NULL) free(metas);
     return count;
 }
 
 void gwim_free_window_entries(gwim_window_entry *arr, int count) {
     if (arr == NULL) return;
     for (int i = 0; i < count; i++) {
-        if (arr[i].title)       free(arr[i].title);
-        if (arr[i].app_name)    free(arr[i].app_name);
-        if (arr[i].space_label) free(arr[i].space_label);
-        arr[i].title       = NULL;
-        arr[i].app_name    = NULL;
-        arr[i].space_label = NULL;
+        if (arr[i].title)    free(arr[i].title);
+        if (arr[i].app_name) free(arr[i].app_name);
+        arr[i].title    = NULL;
+        arr[i].app_name = NULL;
     }
 }
 
