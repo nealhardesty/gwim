@@ -96,7 +96,7 @@ static const CGFloat kGwimSlotW   = 144.0;
 static const CGFloat kGwimSlotH   = 96.0;
 static const CGFloat kGwimSlotPad = 18.0;
 static const CGFloat kGwimTitleH  = 30.0;
-static const int     kGwimMaxCols = 6;
+static const int     kGwimMaxCols = 10;
 static const CGFloat kGwimOverlayMaxScreenFraction = 0.9;
 
 // =====================================================================
@@ -299,7 +299,7 @@ typedef struct {
     NSArray *slotRects;  // NSValue (NSRect) per slot
 } gwim_layout_result;
 
-static gwim_layout_result gwim_compute_layout(NSInteger slotCount, CGFloat scale) {
+static gwim_layout_result gwim_compute_layout(NSInteger slotCount, CGFloat scale, CGFloat screenAspect) {
     gwim_layout_result out;
     NSMutableArray *slotRects = [NSMutableArray arrayWithCapacity:slotCount];
     for (NSInteger i = 0; i < slotCount; i++) {
@@ -322,7 +322,16 @@ static gwim_layout_result gwim_compute_layout(NSInteger slotCount, CGFloat scale
     CGFloat outerPad = pad;
     CGFloat titleH   = kGwimTitleH * sc;
 
-    NSInteger cols = slotCount < kGwimMaxCols ? slotCount : kGwimMaxCols;
+    // Pick cols so the resulting grid roughly matches the screen aspect,
+    // accounting for the slot's own 3:2 aspect. Square-ish for many
+    // windows, wide-rectangle for few.
+    double sa = (screenAspect > 0.0) ? (double)screenAspect : (16.0 / 9.0);
+    double slotAspect = (double)kGwimSlotW / (double)kGwimSlotH;
+    double targetCols = sqrt((double)slotCount * sa / slotAspect);
+    NSInteger cols = (NSInteger)lround(targetCols);
+    if (cols < 1)            cols = 1;
+    if (cols > slotCount)    cols = slotCount;
+    if (cols > kGwimMaxCols) cols = kGwimMaxCols;
     NSInteger rows = (slotCount + cols - 1) / cols;
 
     CGFloat contentW = cols * slotW + (cols - 1) * pad;
@@ -517,15 +526,6 @@ void gwim_overlay_show(int *pids,
         ? gwim_capture_thumbnails(cgids, count)
         : [NSArray array];
 
-    // Compute layout once at unit scale to learn intrinsic dims; the
-    // per-screen scaling happens inside the dispatch block below where we
-    // know each screen's visibleFrame.
-    gwim_layout_result baseLayout = gwim_compute_layout(count, 1.0);
-    CGFloat intrinsicW = baseLayout.width;
-    CGFloat intrinsicH = baseLayout.height;
-    if (intrinsicW < 320) intrinsicW = 320;
-    if (intrinsicH < 180) intrinsicH = 180;
-
     dispatch_block_t block = ^{
         NSArray<NSScreen *> *screenList = [NSScreen screens];
         if (screenList == nil || screenList.count == 0) {
@@ -567,12 +567,19 @@ void gwim_overlay_show(int *pids,
         for (NSUInteger i = 0; i < n; i++) {
             NSScreen *scr = screenList[i];
             NSRect vf = [scr visibleFrame];
+            // Column count depends on screen aspect, so the intrinsic
+            // panel size is per-screen too.
+            CGFloat screenAspect = (vf.size.height > 0)
+                ? (vf.size.width / vf.size.height) : (16.0 / 9.0);
+            gwim_layout_result base = gwim_compute_layout(count, 1.0, screenAspect);
+            CGFloat intrinsicW = MAX(base.width,  320.0);
+            CGFloat intrinsicH = MAX(base.height, 180.0);
+
             CGFloat s =
-                MIN(kGwimOverlayMaxScreenFraction * vf.size.width / intrinsicW,
+                MIN(kGwimOverlayMaxScreenFraction * vf.size.width  / intrinsicW,
                     kGwimOverlayMaxScreenFraction * vf.size.height / intrinsicH);
-            if (s > 1.0) s = 1.0;  // never upscale past native geometry
-            if (s < 0.4) s = 0.4;  // floor: ridiculous overlays still legible
-            gwim_layout_result laid = gwim_compute_layout(count, s);
+            if (s < 0.25) s = 0.25;  // floor: dense layouts can shrink to fit
+            gwim_layout_result laid = gwim_compute_layout(count, s, screenAspect);
             CGFloat width  = laid.width;
             CGFloat height = laid.height;
             CGFloat ox = NSMinX(vf) + (NSWidth(vf) - width) / 2.0;
